@@ -1,0 +1,19 @@
+[
+  {
+    "logId": 42000001,
+    "dateOfSleep": "2024-03-15",
+    "startTime": "2024-03-14T23:12:00.000",
+    "endTime": "2024-03-15T07:02:00.000",
+    "duration": 28200000,
+    "minutesAsleep": 431,
+    "type": "stages",
+    "levels": {
+      "summary": {
+        "deep": {"count": 4, "minutes": 78},
+        "light": {"count": 28, "minutes": 249},
+        "rem": {"count": 6, "minutes": 84},
+        "wake": {"count": 21, "minutes": 39}
+      }
+    }
+  }
+]

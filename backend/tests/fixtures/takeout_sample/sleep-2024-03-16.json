@@ -1,0 +1,36 @@
+[
+  {
+    "logId": 42000002,
+    "dateOfSleep": "2024-03-16",
+    "startTime": "2024-03-15T23:40:00.000",
+    "endTime": "2024-03-16T06:30:00.000",
+    "duration": 24600000,
+    "minutesAsleep": 372,
+    "type": "stages",
+    "levels": {
+      "summary": {
+        "deep": {"count": 3, "minutes": 61},
+        "light": {"count": 24, "minutes": 214},
+        "rem": {"count": 5, "minutes": 70},
+        "wake": {"count": 18, "minutes": 33}
+      }
+    }
+  },
+  {
+    "logId": 42000003,
+    "dateOfSleep": "2024-03-16",
+    "startTime": "2024-03-16T14:05:00.000",
+    "endTime": "2024-03-16T14:50:00.000",
+    "duration": 2700000,
+    "minutesAsleep": 40,
+    "type": "stages",
+    "levels": {
+      "summary": {
+        "deep": {"count": 0, "minutes": 0},
+        "light": {"count": 5, "minutes": 38},
+        "rem": {"count": 0, "minutes": 0},
+        "wake": {"count": 2, "minutes": 5}
+      }
+    }
+  }
+]

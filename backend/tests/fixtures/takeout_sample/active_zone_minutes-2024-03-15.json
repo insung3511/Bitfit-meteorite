@@ -1,0 +1,4 @@
+[
+  {"dateTime": "03/15/24 08:30:00", "value": {"fatBurnActiveZoneMinutes": 12, "cardioActiveZoneMinutes": 8, "peakActiveZoneMinutes": 2}},
+  {"dateTime": "03/15/24 18:15:00", "value": {"fatBurnActiveZoneMinutes": 10, "cardioActiveZoneMinutes": 5, "peakActiveZoneMinutes": 0}}
+]
