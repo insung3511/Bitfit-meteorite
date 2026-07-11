@@ -19,8 +19,11 @@ scheduler thread (or the request handler).
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 
-from sqlmodel import Session, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from sqlmodel import Session, delete, select
 
 # How far back to pull when we have no prior google_health data to anchor on.
 _DEFAULT_LOOKBACK_DAYS = 30
@@ -56,53 +59,68 @@ def sync_once() -> dict:
     # by app.db's module-level engine (mirrors takeout_import.py / summarize.py).
     from app.db import engine, init_db
     from app.google_health_client import fetch_recent_data
-    from app.models import DailyMetric
+    from app.models import DailyMetric, SyncLease
     from app.summarize import compute_daily_summaries
 
     try:
         init_db()
 
-        with Session(engine) as session:
-            since = _determine_since(session, DailyMetric)
-            records = fetch_recent_data(since)
-
-            existing = set(
-                session.exec(
-                    select(DailyMetric.date, DailyMetric.metric_name).where(
-                        DailyMetric.source == "google_health"
-                    )
-                ).all()
-            )
-
-            rows_synced = 0
-            rows_skipped = 0
-            for rec in records:
-                key = (rec["date"], rec["metric_name"])
-                if key in existing:
-                    rows_skipped += 1
-                    continue
-                session.add(
-                    DailyMetric(
-                        date=rec["date"],
-                        metric_name=rec["metric_name"],
-                        value=rec["value"],
-                        unit=rec.get("unit"),
-                        source="google_health",
-                    )
+        with Session(engine) as lock_session:
+            acquired = lock_session.exec(
+                sqlite_insert(SyncLease).values(id=1).on_conflict_do_nothing(
+                    index_elements=["id"]
                 )
-                existing.add(key)
-                rows_synced += 1
+            )
+            lock_session.commit()
+            if not acquired.rowcount:
+                return {"status": "busy", "detail": "A sync is already running."}
 
-            session.commit()
+        try:
+            with Session(engine) as session:
+                since = _determine_since(session, DailyMetric)
+                records = fetch_recent_data(since)
 
-        # Refresh rolling summaries so new points are reflected immediately.
-        compute_daily_summaries()
+                rows_synced = 0
+                rows_skipped = 0
+                for rec in records:
+                    # A provider record can produce one row per sleep stage.
+                    # Include the internal metric in its identity so they coexist.
+                    provider_id = rec.get("provider_record_id")
+                    if not provider_id:
+                        provider_id = hashlib.sha256(
+                            repr((rec["date"], rec["metric_name"], rec["value"])).encode()
+                        ).hexdigest()
+                    record_id = f"{provider_id}:{rec['metric_name']}"
+                    statement = sqlite_insert(DailyMetric).values(
+                        date=rec["date"], metric_name=rec["metric_name"],
+                        value=rec["value"], unit=rec.get("unit"),
+                        source="google_health", provider_record_id=record_id,
+                        source_platform=rec.get("source_platform"),
+                    )
+                    result = session.exec(
+                        statement.on_conflict_do_nothing(
+                            index_elements=["source", "provider_record_id"]
+                        )
+                    )
+                    if result.rowcount:
+                        rows_synced += 1
+                    else:
+                        rows_skipped += 1
 
-        return {
-            "status": "ok",
-            "rows_synced": rows_synced,
-            "rows_skipped": rows_skipped,
-            "since": since.isoformat(),
-        }
+                session.commit()
+
+            # Refresh rolling summaries so new points are reflected immediately.
+            compute_daily_summaries()
+
+            return {
+                "status": "ok",
+                "rows_synced": rows_synced,
+                "rows_skipped": rows_skipped,
+                "since": since.isoformat(),
+            }
+        finally:
+            with Session(engine) as lock_session:
+                lock_session.exec(delete(SyncLease).where(SyncLease.id == 1))
+                lock_session.commit()
     except Exception as exc:  # unattended: never propagate — report and move on.
         return {"status": "error", "detail": str(exc)}

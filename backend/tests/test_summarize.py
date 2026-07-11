@@ -121,19 +121,18 @@ def test_spike_day(seeded_db):
     assert row.delta_vs_baseline == pytest.approx(5000.0 - 34000.0 / 30)
 
 
-def test_multi_source_day_collapses_to_mean(seeded_db):
-    """Two sources on one day average before windowing (1000+3000 -> 2000)."""
+def test_google_health_wins_over_takeout_on_same_day(seeded_db):
+    """Live Google Health is canonical over overlapping Takeout data."""
     from app.summarize import compute_daily_summaries
 
     compute_daily_summaries()
     row = _summary_for(seeded_db, _MULTI_SOURCE_DAY)
 
     assert row is not None
-    # Only 2024-01-01 (1000) and 2024-01-02 (2000) fall in either window.
-    # mean = 1500; delta = own value (2000) - 1500 = 500 proves the collapse.
-    assert row.mean_7d == pytest.approx(1500.0)
-    assert row.mean_30d == pytest.approx(1500.0)
-    assert row.delta_vs_baseline == pytest.approx(500.0)
+    # The Google Health record is the only canonical value for Jan 2.
+    assert row.mean_7d == pytest.approx(2000.0)
+    assert row.mean_30d == pytest.approx(2000.0)
+    assert row.delta_vs_baseline == pytest.approx(1000.0)
 
 
 def test_idempotent_rerun(seeded_db):

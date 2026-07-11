@@ -32,3 +32,6 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
+    from app.migrations import migrate
+
+    migrate(engine)

@@ -423,6 +423,8 @@ def _persist(engine, DailyMetric, accumulators, report: _Report) -> None:
                     value=acc.value,
                     unit=acc.unit,
                     source="takeout",
+                    provider_record_id=f"takeout:{day.isoformat()}:{metric_name}",
+                    source_platform="FITBIT",
                 )
             )
             report.rows_inserted[metric_name] += 1

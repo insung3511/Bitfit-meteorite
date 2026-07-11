@@ -96,14 +96,16 @@ python -m app.takeout_import /path/to/Takeout/Fitbit
 ```
 
 It walks the tree recursively, folds each metric down to one value per day, and
-inserts rows into `daily_metric` with `source="takeout"`. It prints a summary of
-files processed/skipped and rows inserted per metric.
+inserts provenance-tagged rows into `daily_metric` with `source="takeout"`. It
+prints a summary of files processed/skipped and rows inserted per metric.
 
 Notes:
 
-- **Idempotent** — re-running over the same export never duplicates rows. Before
-  inserting, it checks the existing `(date, metric_name)` keys for
-  `source="takeout"` and skips ones already present.
+- **Idempotent** — re-running over the same export never duplicates rows. Each
+  imported daily record has a stable provider identity.
+- **Canonical data** — when Google Health has Fitbit-origin data for a day it is
+  used for dashboard and chat analysis; other Google Health data is the next
+  fallback, followed by Takeout. Sources are never averaged together.
 - **Metrics imported**: `steps`, `resting_heart_rate`,
   `sleep_{light,deep,rem,awake}_minutes`, `spo2`, `hrv`, `weight`,
   `active_zone_minutes`. Intraday heart-rate files are recognised but not
@@ -140,6 +142,8 @@ the parser without a real Takeout archive.
 
 - `app/main.py` — FastAPI app, CORS, table creation, scheduler lifecycle, router wiring + auth gate.
 - `app/db.py` — SQLite engine setup; `DATABASE_URL` env var (default `./health.db`).
+- `app/migrations.py` — forward-only local SQLite migration that preserves legacy
+  raw records and rebuilds derived summaries.
 - `app/models.py` — SQLModel schema: `OAuthToken`, `DailyMetric`, `DailySummary`.
 - `app/session.py` + `app/routes/session.py` — app-level password login (`/session/login|logout|me`), session cookie.
 - `app/auth.py` + `app/routes/auth.py` — Google Health OAuth2 flow, Fernet token encryption, `get_valid_access_token()`.

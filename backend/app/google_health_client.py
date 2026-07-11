@@ -23,16 +23,16 @@ What IS documented and used below:
 * The data type names for the metrics this app ingests (see ``_DATA_TYPES``).
 * Response envelope ``{"dataPoints": [...], "nextPageToken": "..."}``.
 
-What is NOT yet documented publicly (the reference lists the ``DataPoint`` union
-but not each member's concrete value fields): the exact JSON field names *inside*
-a data point that hold the numeric value / sleep-stage breakdown. Those are read
-in ONE place — :func:`_normalize_data_point` — which carries a best-effort guess
-and a clearly-marked TODO so confirming it later is a small localized edit.
+The normalizer follows the documented nested ``DataPoint`` shape and isolates
+the per-data-type payload keys in ``_DATA_TYPES`` so future provider additions
+remain small, contract-testable changes.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -74,43 +74,53 @@ class _DataTypeSpec:
     civil: bool
     metric_name: Optional[str]
     unit: Optional[str]
+    aggregation: str
+    payload_key: str
 
 
 # Maps our metric vocabulary onto the documented Google Health data type names
 # (https://developers.google.com/health/data-types). ``sleep`` fans out into the
 # four stage metrics during normalization, so it has no single metric_name.
 _DATA_TYPES: list[_DataTypeSpec] = [
-    _DataTypeSpec("steps", "interval.start_time", False, "steps", "count"),
+    _DataTypeSpec("steps", "interval.civil_start_time", True, "steps", "count", "sum", "steps"),
     _DataTypeSpec(
         "daily-resting-heart-rate",
-        "sample_time.civil_time",
-        True,
+        "sample_time.physical_time",
+        False,
         "resting_heart_rate",
         "bpm",
+        "mean",
+        "dailyRestingHeartRate",
     ),
     _DataTypeSpec(
         "heart-rate-variability",
-        "sample_time.civil_time",
-        True,
+        "sample_time.physical_time",
+        False,
         "hrv",
         "ms",
+        "mean",
+        "heartRateVariability",
     ),
     _DataTypeSpec(
         "oxygen-saturation",
-        "sample_time.civil_time",
-        True,
+        "sample_time.physical_time",
+        False,
         "spo2",
         "percent",
+        "mean",
+        "oxygenSaturation",
     ),
-    _DataTypeSpec("weight", "sample_time.civil_time", True, "weight", "kg"),
+    _DataTypeSpec("weight", "sample_time.physical_time", False, "weight", "kg", "mean", "weight"),
     _DataTypeSpec(
         "active-zone-minutes",
-        "interval.start_time",
-        False,
+        "interval.civil_start_time",
+        True,
         "active_zone_minutes",
         "minutes",
+        "sum",
+        "activeZoneMinutes",
     ),
-    _DataTypeSpec("sleep", "interval.start_time", False, None, "minutes"),
+    _DataTypeSpec("sleep", "interval.civil_end_time", True, None, "minutes", "sum", "sleep"),
 ]
 
 # Google sleep-stage type -> our per-stage metric name.
@@ -227,22 +237,16 @@ def _request_with_retry(
 
 
 def _normalize_data_point(spec: _DataTypeSpec, data_point: dict) -> list[dict]:
-    """Turn one Google ``DataPoint`` into zero or more normalized records.
-
-    # TODO: confirm exact response field names against
-    # https://developers.google.com/health/reference once you have real API
-    # access. The endpoint, auth, filters and pagination above are confirmed from
-    # the public docs, but the docs do NOT yet publish the concrete value fields
-    # *inside* a DataPoint (the reference lists a `DataPoint` union without each
-    # member's schema). Everything uncertain is isolated to this function, so the
-    # fix is a small localized edit: adjust `_extract_date`, `_extract_value`, and
-    # the sleep-stage block below to the real field names.
-    """
+    """Turn one documented Google ``DataPoint`` into normalized records."""
+    payload = data_point.get(spec.payload_key)
+    if not isinstance(payload, dict):
+        return []
+    metadata = _record_metadata(data_point)
     if spec.google_name == "sleep":
-        return _normalize_sleep(data_point)
+        return _normalize_sleep(payload, metadata)
 
-    day = _extract_date(data_point)
-    value = _extract_value(data_point)
+    day = _extract_date(payload)
+    value = _extract_value(payload)
     if day is None or value is None or spec.metric_name is None:
         return []
     return [
@@ -251,11 +255,13 @@ def _normalize_data_point(spec: _DataTypeSpec, data_point: dict) -> list[dict]:
             "metric_name": spec.metric_name,
             "value": value,
             "unit": spec.unit,
+            "aggregation": spec.aggregation,
+            **metadata,
         }
     ]
 
 
-def _normalize_sleep(data_point: dict) -> list[dict]:
+def _normalize_sleep(payload: dict, metadata: dict[str, str]) -> list[dict]:
     """Fan a sleep session out into per-stage minute totals (best-effort).
 
     Best-effort shape (see the TODO in ``_normalize_data_point``): a sleep data
@@ -263,15 +269,11 @@ def _normalize_sleep(data_point: dict) -> list[dict]:
     duration, under a ``sleep``/``stages``/``segments`` container. Unknown shapes
     yield nothing rather than guessing wrong.
     """
-    day = _extract_date(data_point)
+    day = _extract_date(payload)
     if day is None:
         return []
 
-    container = (
-        data_point.get("sleep")
-        or data_point.get("value")
-        or data_point
-    )
+    container = payload
     segments = None
     if isinstance(container, dict):
         segments = (
@@ -294,9 +296,27 @@ def _normalize_sleep(data_point: dict) -> list[dict]:
         minutes_by_metric[metric] = minutes_by_metric.get(metric, 0.0) + minutes
 
     return [
-        {"date": day, "metric_name": metric, "value": minutes, "unit": "minutes"}
+        {
+            "date": day,
+            "metric_name": metric,
+            "value": minutes,
+            "unit": "minutes",
+            "aggregation": "sum",
+            **metadata,
+        }
         for metric, minutes in minutes_by_metric.items()
     ]
+
+
+def _record_metadata(data_point: dict) -> dict[str, str]:
+    """Return stable provider identity and platform for a data point."""
+    record_id = data_point.get("name")
+    if not isinstance(record_id, str) or not record_id:
+        encoded = json.dumps(data_point, sort_keys=True, separators=(",", ":")).encode()
+        record_id = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    source = data_point.get("dataSource")
+    platform = source.get("platform") if isinstance(source, dict) else None
+    return {"provider_record_id": record_id, "source_platform": str(platform or "GOOGLE_HEALTH")}
 
 
 def _extract_date(data_point: dict) -> Optional[dt.date]:

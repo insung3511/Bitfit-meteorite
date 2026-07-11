@@ -30,33 +30,49 @@ import datetime as dt
 import statistics
 from collections import defaultdict
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 _WINDOW_7D = 7
 _WINDOW_30D = 30
 
 
-def _per_day_values(
-    rows: list[tuple[dt.date, float]]
-) -> dict[str, dict[dt.date, float]]:
-    """Group raw ``(metric_name, date, value)`` rows into per-day means.
+_SUM_METRICS = {
+    "steps",
+    "active_zone_minutes",
+    "sleep_light_minutes",
+    "sleep_deep_minutes",
+    "sleep_rem_minutes",
+    "sleep_awake_minutes",
+}
 
-    Returns ``{metric_name: {date: mean_value}}`` where ``mean_value`` collapses
-    all rows sharing that ``(metric_name, date)`` (across sources) to their mean.
+
+def _per_day_values(rows) -> dict[str, dict[dt.date, float]]:
+    """Select a canonical source then aggregate its records for each day.
+
+    Fitbit-origin Google Health records win; reconciled Google Health records
+    are next; Takeout/legacy data is historical fallback. Sources never mix in a
+    canonical value, preventing a sync and a backfill from fabricating averages.
     """
-    # metric_name -> date -> [values]
-    buckets: dict[str, dict[dt.date, list[float]]] = defaultdict(
+    buckets: dict[tuple[str, dt.date], dict[str, list[float]]] = defaultdict(
         lambda: defaultdict(list)
     )
-    for metric_name, day, value in rows:
-        buckets[metric_name][day].append(value)
+    for metric_name, day, value, source, platform in rows:
+        if source == "google_health" and platform == "FITBIT":
+            tier = "fitbit"
+        elif source == "google_health":
+            tier = "google_health"
+        else:
+            tier = "fallback"
+        buckets[(metric_name, day)][tier].append(value)
 
-    collapsed: dict[str, dict[dt.date, float]] = {}
-    for metric_name, by_day in buckets.items():
-        collapsed[metric_name] = {
-            day: statistics.fmean(values) for day, values in by_day.items()
-        }
-    return collapsed
+    canonical: dict[str, dict[dt.date, float]] = defaultdict(dict)
+    for (metric_name, day), tiers in buckets.items():
+        values = tiers.get("fitbit") or tiers.get("google_health") or tiers["fallback"]
+        canonical[metric_name][day] = (
+            sum(values) if metric_name in _SUM_METRICS else statistics.fmean(values)
+        )
+    return dict(canonical)
 
 
 def _window_stats(
@@ -105,7 +121,11 @@ def compute_daily_summaries(metric_names: list[str] | None = None) -> dict:
 
     with Session(engine) as session:
         statement = select(
-            DailyMetric.metric_name, DailyMetric.date, DailyMetric.value
+            DailyMetric.metric_name,
+            DailyMetric.date,
+            DailyMetric.value,
+            DailyMetric.source,
+            DailyMetric.source_platform,
         )
         if metric_names:
             statement = statement.where(DailyMetric.metric_name.in_(metric_names))
@@ -113,8 +133,7 @@ def compute_daily_summaries(metric_names: list[str] | None = None) -> dict:
 
         by_metric = _per_day_values(raw_rows)
 
-        # Preload existing summaries for the metrics we're touching so each
-        # (date, metric_name) is an update-or-insert without a per-row query.
+        # Counts are diagnostic only; writes below are DB-native atomic upserts.
         existing_stmt = select(DailySummary)
         if metric_names:
             existing_stmt = existing_stmt.where(
@@ -132,15 +151,28 @@ def compute_daily_summaries(metric_names: list[str] | None = None) -> dict:
                 )
                 summary = existing.get((day, metric_name))
                 if summary is None:
-                    summary = DailySummary(date=day, metric_name=metric_name)
                     rows_inserted += 1
                 else:
                     rows_updated += 1
-                summary.mean_7d = mean_7d
-                summary.mean_30d = mean_30d
-                summary.stddev_30d = stddev_30d
-                summary.delta_vs_baseline = delta
-                session.add(summary)
+                statement = sqlite_insert(DailySummary).values(
+                    date=day,
+                    metric_name=metric_name,
+                    mean_7d=mean_7d,
+                    mean_30d=mean_30d,
+                    stddev_30d=stddev_30d,
+                    delta_vs_baseline=delta,
+                )
+                session.exec(
+                    statement.on_conflict_do_update(
+                        index_elements=["date", "metric_name"],
+                        set_={
+                            "mean_7d": statement.excluded.mean_7d,
+                            "mean_30d": statement.excluded.mean_30d,
+                            "stddev_30d": statement.excluded.stddev_30d,
+                            "delta_vs_baseline": statement.excluded.delta_vs_baseline,
+                        },
+                    )
+                )
 
         session.commit()
 

@@ -43,6 +43,7 @@ MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 # Max tokens for a single assistant turn. Well under the streaming threshold, so a
 # plain (non-streaming) request is fine.
 _MAX_TOKENS = 2048
+_MAX_TOOL_ROUNDS = 8
 
 # Anomaly threshold: a metric-day is anomalous when its deviation from baseline
 # exceeds this many rolling-30-day standard deviations.
@@ -359,7 +360,7 @@ def _run_agent(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]
     """
     client = _get_client()
 
-    while True:
+    for _ in range(_MAX_TOOL_ROUNDS + 1):
         response = client.messages.create(
             model=MODEL,
             max_tokens=_MAX_TOKENS,
@@ -391,6 +392,9 @@ def _run_agent(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]
                     }
                 )
         messages.append({"role": "user", "content": tool_results})
+
+    else:
+        raise RuntimeError("The assistant exceeded the maximum number of tool rounds.")
 
     final_text = "".join(
         block.get("text", "")

@@ -115,7 +115,6 @@ export default function DashboardPage() {
 
     for (const { metric } of DEFAULT_METRICS) {
       if (!availableMetrics.has(metric)) continue;
-      setCharts((prev) => ({ ...prev, [metric]: { status: "loading" } }));
       getJSON<SummaryResponse>(`/dashboard/summary?metric=${metric}&days=30`)
         .then((res) => {
           if (cancelled) return;
@@ -136,7 +135,6 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metricsState.status, availableMetrics]);
 
   async function runSleepCoaching() {

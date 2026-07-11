@@ -11,6 +11,7 @@ Three tables back the Phase 1 data pipeline:
 import datetime as dt
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -35,6 +36,27 @@ class OAuthToken(SQLModel, table=True):
     updated_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 
+class OAuthState(SQLModel, table=True):
+    """One-time Google OAuth CSRF state, bound to the initiating local session."""
+
+    __tablename__ = "oauth_state"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    state_hash: str = Field(index=True, unique=True)
+    session_token: str
+    expires_at: dt.datetime = Field(index=True)
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+
+
+class SyncLease(SQLModel, table=True):
+    """Singleton database lease preventing scheduler/manual sync overlap."""
+
+    __tablename__ = "sync_lease"
+
+    id: int = Field(default=1, primary_key=True)
+    acquired_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+
+
 class DailyMetric(SQLModel, table=True):
     """A single raw metric observation for a given day.
 
@@ -47,6 +69,9 @@ class DailyMetric(SQLModel, table=True):
     """
 
     __tablename__ = "daily_metric"
+    __table_args__ = (
+        UniqueConstraint("source", "provider_record_id", name="uq_daily_metric_source_record"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     date: dt.date = Field(index=True)
@@ -56,6 +81,10 @@ class DailyMetric(SQLModel, table=True):
     source: Optional[str] = Field(
         default=None, description="e.g. 'google_health', 'takeout'"
     )
+    # Stable provider identity makes repeated fetches idempotent without
+    # collapsing distinct observations that happen on the same calendar day.
+    provider_record_id: Optional[str] = Field(default=None, index=True)
+    source_platform: Optional[str] = Field(default=None, index=True)
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 
 
@@ -67,6 +96,9 @@ class DailySummary(SQLModel, table=True):
     """
 
     __tablename__ = "daily_summary"
+    __table_args__ = (
+        UniqueConstraint("date", "metric_name", name="uq_daily_summary_date_metric"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     date: dt.date = Field(index=True)

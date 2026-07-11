@@ -165,15 +165,25 @@ def test_normalize_steps_data_point():
     import app.google_health_client as client
 
     spec = next(s for s in client._DATA_TYPES if s.google_name == "steps")
-    fake_dp = {"startTime": "2024-03-01T00:00:00Z", "value": {"intVal": 8000}}
+    fake_dp = {
+        "name": "users/me/dataTypes/steps/dataPoints/1",
+        "dataSource": {"platform": "FITBIT"},
+        "steps": {
+            "interval": {"startTime": "2024-03-01T00:00:00Z"},
+            "count": "8000",
+        },
+    }
 
     records = client._normalize_data_point(spec, fake_dp)
     assert records == [
         {
             "date": dt.date(2024, 3, 1),
-            "metric_name": "steps",
-            "value": 8000.0,
-            "unit": "count",
+                "metric_name": "steps",
+                "value": 8000.0,
+                "unit": "count",
+                "aggregation": "sum",
+                "provider_record_id": "users/me/dataTypes/steps/dataPoints/1",
+                "source_platform": "FITBIT",
         }
     ]
 
@@ -183,8 +193,10 @@ def test_normalize_sleep_fans_out_stages():
 
     spec = next(s for s in client._DATA_TYPES if s.google_name == "sleep")
     fake_dp = {
-        "startTime": "2024-03-01T23:00:00Z",
+        "name": "users/me/dataTypes/sleep/dataPoints/1",
+        "dataSource": {"platform": "FITBIT"},
         "sleep": {
+            "interval": {"startTime": "2024-03-01T23:00:00Z"},
             "stages": [
                 {"stage": "LIGHT", "minutes": 200},
                 {"stage": "DEEP", "minutes": 90},
@@ -203,6 +215,7 @@ def test_normalize_sleep_fans_out_stages():
         "sleep_awake_minutes": 20.0,
     }
     assert all(r["date"] == dt.date(2024, 3, 1) for r in records)
+    assert all(r["source_platform"] == "FITBIT" for r in records)
 
 
 def test_build_filter_interval_vs_civil():
@@ -214,9 +227,9 @@ def test_build_filter_interval_vs_civil():
 
     assert (
         client._build_filter(steps, since)
-        == 'steps.interval.start_time >= "2024-03-01T12:30:00Z"'
+        == 'steps.interval.civil_start_time >= "2024-03-01"'
     )
     assert (
         client._build_filter(weight, since)
-        == 'weight.sample_time.civil_time >= "2024-03-01"'
+        == 'weight.sample_time.physical_time >= "2024-03-01T12:30:00Z"'
     )
