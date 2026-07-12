@@ -32,6 +32,9 @@ export default function RootLayout({
               <Link href="/dashboard" className="hover:underline">
                 Dashboard
               </Link>
+              <Link href="/import" className="hover:underline">
+                Import
+              </Link>
             </div>
             <LogoutButton />
           </nav>

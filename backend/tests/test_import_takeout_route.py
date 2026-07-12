@@ -98,3 +98,11 @@ def test_reimport_is_idempotent(scratch_db):
     assert first["rows_inserted_total"] >= 1
     assert second["rows_inserted_total"] == 0
     assert second["rows_skipped_existing"] >= 1
+
+
+def test_route_is_registered_under_session_gate():
+    """The router is mounted at /import/takeout so the UI can POST uploads."""
+    from app.main import app
+
+    paths = {route.path for route in app.routes}
+    assert "/import/takeout" in paths

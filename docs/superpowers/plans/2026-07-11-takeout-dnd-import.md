@@ -26,7 +26,13 @@ The pure logic: validate a `.zip` byte payload, safely extract it, and run the e
 
 **Files:**
 - Create: `backend/app/routes/import_takeout.py`
+- Modify: `backend/pyproject.toml` (add `python-multipart` to `dependencies`)
 - Test: `backend/tests/test_import_takeout_route.py`
+
+> **Note (plan correction):** FastAPI validates `UploadFile` route params at
+> module-import time, so `python-multipart` must be installed and declared as
+> soon as this route module exists — i.e. in Task 1, not Task 2. The dependency
+> step below was moved here from Task 2.
 
 **Interfaces:**
 - Consumes: `app.takeout_import.import_takeout(path: str) -> dict` (existing).
@@ -240,6 +246,34 @@ async def upload_takeout(file: UploadFile) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 ```
 
+- [ ] **Step 3b: Add the python-multipart dependency**
+
+FastAPI validates the `UploadFile` route param when the module is imported, so
+the test suite cannot even import the module without `python-multipart`.
+
+In `backend/pyproject.toml`, add `"python-multipart"` to the `dependencies`
+list (next to `python-dotenv`):
+
+```toml
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlmodel",
+    "python-dotenv",
+    "python-multipart",
+    "cryptography",
+    "apscheduler",
+    "anthropic",
+    "httpx",
+    "authlib",
+]
+```
+
+Then install it into the active environment:
+
+Run: `cd backend && python -m pip install python-multipart`
+Expected: "Successfully installed python-multipart-…".
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && python -m pytest tests/test_import_takeout_route.py -v`
@@ -249,8 +283,11 @@ Expected: PASS (6 passed). If `test_imports_daily_csv_from_zip` fails on row cou
 
 ```bash
 cd backend
-git add app/routes/import_takeout.py tests/test_import_takeout_route.py
+git add app/routes/import_takeout.py tests/test_import_takeout_route.py pyproject.toml
 git commit -m "feat(import): add safe Takeout .zip extract-and-import helper
+
+Adds python-multipart (FastAPI validates the UploadFile route param at
+module-import time, so the suite needs it to import the module).
 
 Constraint: reuse existing import_takeout(dir); no importer changes
 Constraint: guard zip-slip and cap upload size (MAX_UPLOAD_MB, default 200)
@@ -262,10 +299,10 @@ Scope-risk: narrow"
 
 ### Task 2: Wire the upload route into the app
 
-Mount the new router under the session gate and add the `python-multipart` dependency FastAPI needs for `UploadFile`.
+Mount the new router under the session gate. (`python-multipart` was already
+added in Task 1 — FastAPI needs it at module-import time.)
 
 **Files:**
-- Modify: `backend/pyproject.toml` (add `python-multipart` to `dependencies`)
 - Modify: `backend/app/main.py` (import + include the router under `require_session`)
 - Test: `backend/tests/test_import_takeout_route.py` (add a route-wiring test)
 
@@ -289,33 +326,9 @@ def test_route_is_registered_under_session_gate():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cd backend && python -m pytest tests/test_import_takeout_route.py::test_route_is_registered_under_session_gate -v`
-Expected: FAIL — `/import/takeout` not in the app's routes (router not yet mounted). It may also fail at import with `RuntimeError: Form data requires "python-multipart"` — Step 3 fixes both.
+Expected: FAIL — `/import/takeout` not in the app's routes (router not yet mounted).
 
-- [ ] **Step 3a: Add the python-multipart dependency**
-
-In `backend/pyproject.toml`, add `"python-multipart"` to the `dependencies` list (alphabetical-ish, next to the other core libs):
-
-```toml
-dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "sqlmodel",
-    "python-dotenv",
-    "python-multipart",
-    "cryptography",
-    "apscheduler",
-    "anthropic",
-    "httpx",
-    "authlib",
-]
-```
-
-Then install it into the active environment:
-
-Run: `cd backend && python -m pip install python-multipart`
-Expected: "Successfully installed python-multipart-…".
-
-- [ ] **Step 3b: Mount the router in main.py**
+- [ ] **Step 3: Mount the router in main.py**
 
 In `backend/app/main.py`, add the import alongside the other route imports (after `from app.routes import dashboard as dashboard_routes`):
 
@@ -343,10 +356,8 @@ Expected: all tests pass (no import-time failures from the new router or depende
 
 ```bash
 cd backend
-git add pyproject.toml app/main.py tests/test_import_takeout_route.py
+git add app/main.py tests/test_import_takeout_route.py
 git commit -m "feat(import): mount POST /import/takeout under session gate
-
-Adds python-multipart (required by FastAPI UploadFile).
 
 Constraint: endpoint must sit behind require_session like every other route
 Confidence: high

@@ -14,6 +14,7 @@ from app.db import init_db
 from app.routes import auth as auth_routes
 from app.routes import chat as chat_routes
 from app.routes import dashboard as dashboard_routes
+from app.routes import import_takeout as import_takeout_routes
 from app.routes import session as session_routes
 from app.routes import sync as sync_routes
 from app.routes import workspace as workspace_routes
@@ -77,6 +78,7 @@ app.include_router(session_routes.router)
 _protected = [Depends(require_session)]
 app.include_router(auth_routes.router, dependencies=_protected)
 app.include_router(sync_routes.router, dependencies=_protected)
+app.include_router(import_takeout_routes.router, dependencies=_protected)
 app.include_router(chat_routes.router, dependencies=_protected)
 app.include_router(dashboard_routes.router, dependencies=_protected)
 app.include_router(workspace_routes.router, dependencies=_protected)

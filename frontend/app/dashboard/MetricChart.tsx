@@ -30,10 +30,16 @@ type Props = {
   embedded?: boolean;
 };
 
-/** Short "M/D" tick label from an ISO date. */
-function shortDate(iso: string): string {
-  const d = new Date(`${iso}T00:00:00`);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+/** Parse a calendar date without allowing the browser timezone to shift it. */
+function dateTimestamp(iso: string): number {
+  const [year, month, day] = iso.slice(0, 10).split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+/** Short "M/D" label for the chart's UTC calendar-date timestamps. */
+function shortDate(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getUTCMonth() + 1}/${date.getUTCDate()}`;
 }
 
 /** Compact numeric formatting for axis ticks / tooltip values. */
@@ -57,7 +63,9 @@ function ChartTooltip({
   if (!active || !payload || payload.length === 0) return null;
   return (
     <div className="rounded-md border border-black/10 bg-white px-2.5 py-1.5 text-xs shadow-sm dark:border-white/15 dark:bg-neutral-900">
-      <div className="font-medium">{typeof label === "string" ? shortDate(label) : label}</div>
+      <div className="font-medium">
+        {typeof label === "number" ? shortDate(label) : label}
+      </div>
       {payload.map((entry, index) => {
         const raw = entry.value;
         const value =
@@ -89,11 +97,15 @@ export default function MetricChart({
 }: Props) {
   const gradientId = `grad-${label.replace(/[^a-z0-9]/gi, "")}`;
   const hasData = points.some((p) => p.mean_7d != null || p.mean_30d != null);
+  const chartPoints = points.map((point) => ({
+    ...point,
+    timestamp: dateTimestamp(point.date),
+  }));
 
   const chart = hasData ? (
     <div className="h-44 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+        <ComposedChart data={chartPoints} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={color} stopOpacity={0.22} />
@@ -106,7 +118,10 @@ export default function MetricChart({
             vertical={false}
           />
           <XAxis
-            dataKey="date"
+            dataKey="timestamp"
+            type="number"
+            scale="time"
+            domain={["dataMin", "dataMax"]}
             tickFormatter={shortDate}
             tick={{ fontSize: 11, fill: "var(--viz-muted)" }}
             tickLine={false}
