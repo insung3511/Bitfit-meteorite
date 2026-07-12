@@ -33,6 +33,7 @@ type Props = {
 /** Short "M/D" tick label from an ISO date. */
 function shortDate(iso: string): string {
   const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso.slice(5) || iso;
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
@@ -56,14 +57,14 @@ function ChartTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="rounded-md border border-black/10 bg-white px-2.5 py-1.5 text-xs shadow-sm dark:border-white/15 dark:bg-neutral-900">
-      <div className="font-medium">{typeof label === "string" ? shortDate(label) : label}</div>
+    <div className="rounded border border-[var(--line-strong)] bg-[var(--paper)] px-2.5 py-1.5 text-xs shadow-lg">
+      <div className="eyebrow">{typeof label === "string" ? shortDate(label) : label}</div>
       {payload.map((entry, index) => {
         const raw = entry.value;
         const value =
           typeof raw === "number" ? formatValue(raw) : String(raw ?? "");
         return (
-          <div key={`${entry.name ?? "value"}-${index}`} className="text-black/60 dark:text-white/60">
+          <div key={`${entry.name ?? "value"}-${index}`} className="text-[var(--ink-soft)]">
             {entry.name ?? "Value"}: <span className="font-mono">{value}</span>
           </div>
         );
@@ -108,14 +109,14 @@ export default function MetricChart({
           <XAxis
             dataKey="date"
             tickFormatter={shortDate}
-            tick={{ fontSize: 11, fill: "var(--viz-muted)" }}
+            tick={{ fontSize: 10, fill: "var(--viz-muted)", fontWeight: 700 }}
             tickLine={false}
             axisLine={{ stroke: "var(--viz-axis)" }}
             minTickGap={24}
           />
           <YAxis
             tickFormatter={formatValue}
-            tick={{ fontSize: 11, fill: "var(--viz-muted)" }}
+            tick={{ fontSize: 10, fill: "var(--viz-muted)", fontWeight: 700 }}
             tickLine={false}
             axisLine={false}
             width={40}
@@ -176,7 +177,7 @@ export default function MetricChart({
       </ResponsiveContainer>
     </div>
   ) : (
-    <div className="flex h-44 items-center justify-center text-sm text-black/40 dark:text-white/40">
+    <div className="flex h-44 items-center justify-center border border-dashed border-[var(--line)] text-sm text-[var(--ink-soft)]">
       No data yet
     </div>
   );

@@ -1,8 +1,21 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #eeece5;
+  --foreground: #141617;
+
+  --board: #eeece5;
+  --paper: #f8f7f2;
+  --ink: #141617;
+  --ink-soft: #59605f;
+  --line: #d4d4cc;
+  --line-strong: #afb3ae;
+  --signal-blue: #1d78d4;
+  --signal-cyan: #12a6b8;
+  --signal-yellow: #f3c400;
+  --signal-red: #ed3d3d;
+  --signal-green: #17a66b;
+  --signal-purple: #7257d8;
 
   /* Dataviz chart chrome (light) — see dataviz skill reference palette. */
   --viz-surface: #fcfcfb;
@@ -49,4 +62,64 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+.board-shell {
+  background:
+    linear-gradient(90deg, rgba(20, 22, 23, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--board);
+}
+
+.board-card {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: 0 1px 0 rgba(20, 22, 23, 0.05);
+}
+
+.board-card-dark {
+  border: 1px solid #2f3434;
+  background: var(--ink);
+  color: #f7f7f2;
+}
+
+.eyebrow {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.stat-number {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #151717;
+    --foreground: #f1f1ec;
+    --board: #151717;
+    --paper: #1d2020;
+    --ink: #f1f1ec;
+    --ink-soft: #a6aaa4;
+    --line: #343938;
+    --line-strong: #525a56;
+  }
+
+  .board-shell {
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
+      var(--board);
+  }
 }
