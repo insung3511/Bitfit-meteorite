@@ -1,0 +1,15 @@
+{
+  "projectId": "8a79d72d-7035-47d6-9e38-bafb1e891431",
+  "pkg": "@bitfit/ui",
+  "globalName": "BitfitUI",
+  "shape": "storybook",
+  "storybookConfigDir": "packages/ui/.storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "buildCmd": "npm --prefix packages/ui run build",
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "MetricChart": { "cardMode": "column" },
+    "WorkspacePanel": { "cardMode": "column" },
+    "StatTile": { "cardMode": "column" }
+  }
+}
