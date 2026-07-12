@@ -151,3 +151,18 @@ def test_idempotent_rerun(seeded_db):
         count = len(session.exec(select(models.DailySummary)).all())
     # One summary row per distinct date (45), no duplicates after re-run.
     assert count == _DAYS
+
+
+def test_dashboard_window_anchors_to_latest_historical_date(seeded_db):
+    """Historical-only imports remain chartable instead of filtering from today."""
+    import app.routes.dashboard as dashboard
+    from app.summarize import compute_daily_summaries
+
+    compute_daily_summaries()
+    dashboard = importlib.reload(dashboard)
+
+    result = dashboard.summary(_METRIC, days=30)
+
+    assert result["count"] == 30
+    assert result["points"][0]["date"] == "2024-01-16"
+    assert result["points"][-1]["date"] == "2024-02-14"

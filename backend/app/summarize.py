@@ -44,6 +44,7 @@ _SUM_METRICS = {
     "sleep_deep_minutes",
     "sleep_rem_minutes",
     "sleep_awake_minutes",
+    "sleep_minutes",
 }
 
 

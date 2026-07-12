@@ -24,6 +24,7 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Query
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db import engine
@@ -43,11 +44,18 @@ def summary(
     """Return the trailing ``days`` of summary rows for one metric, date-ordered.
 
     Each row carries the rolling statistics a line chart plots (7-day and 30-day
-    mean, 30-day stddev, delta vs. baseline). The window is anchored to today so a
-    fresh install with no recent rows simply returns an empty series.
+    mean, 30-day stddev, delta vs. baseline). The window is anchored to the
+    metric's newest available date, so historical Takeout exports remain visible.
     """
-    since = dt.date.today() - dt.timedelta(days=days)
     with Session(engine) as session:
+        latest = session.exec(
+            select(func.max(DailySummary.date)).where(
+                DailySummary.metric_name == metric
+            )
+        ).one()
+        if latest is None:
+            return {"metric": metric, "days": days, "count": 0, "points": []}
+        since = latest - dt.timedelta(days=days - 1)
         rows = session.exec(
             select(DailySummary)
             .where(
