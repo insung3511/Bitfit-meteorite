@@ -1,0 +1,85 @@
+/* Design tokens for @bitfit/ui — extracted from the app's globals.css.
+   Light values on :root, dark via prefers-color-scheme AND an explicit
+   [data-theme] override so a design-tool theme toggle switches deterministically. */
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Dataviz chart chrome (light). */
+  --viz-surface: #fcfcfb;
+  --viz-muted: #898781;
+  --viz-grid: #e1e0d9;
+  --viz-axis: #c3c2b7;
+
+  /* Dataviz categorical series, fixed order — never cycled/reassigned. */
+  --series-1: #2a78d6; /* blue */
+  --series-2: #1baf7a; /* aqua */
+  --series-3: #eda100; /* yellow */
+  --series-4: #008300; /* green */
+  --series-5: #4a3aa7; /* violet */
+  --series-6: #e34948; /* red */
+}
+
+/* Dark values shared by media-query default and explicit [data-theme="dark"]. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+
+    --viz-surface: #1a1a19;
+    --viz-muted: #898781;
+    --viz-grid: #2c2c2a;
+    --viz-axis: #383835;
+
+    --series-1: #3987e5;
+    --series-2: #199e70;
+    --series-3: #c98500;
+    --series-4: #008300;
+    --series-5: #9085e9;
+    --series-6: #e66767;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+
+  --viz-surface: #1a1a19;
+  --viz-muted: #898781;
+  --viz-grid: #2c2c2a;
+  --viz-axis: #383835;
+
+  --series-1: #3987e5;
+  --series-2: #199e70;
+  --series-3: #c98500;
+  --series-4: #008300;
+  --series-5: #9085e9;
+  --series-6: #e66767;
+}
+
+/* Explicit light override wins even when the OS prefers dark. */
+:root[data-theme="light"] {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  --viz-surface: #fcfcfb;
+  --viz-muted: #898781;
+  --viz-grid: #e1e0d9;
+  --viz-axis: #c3c2b7;
+
+  --series-1: #2a78d6;
+  --series-2: #1baf7a;
+  --series-3: #eda100;
+  --series-4: #008300;
+  --series-5: #4a3aa7;
+  --series-6: #e34948;
+}
+
+/* Reference lean: bold, tight, tabular numerals for big metric values (StatTile). */
+.stat-number {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
