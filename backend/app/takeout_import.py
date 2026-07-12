@@ -475,7 +475,18 @@ def import_takeout(path: str) -> dict:
 
     compute_daily_summaries()
 
-    return report.as_dict()
+    # Keep the established daily import as the compatibility path, then index
+    # interval/session/track observations in the separate bounded raw store.
+    # A raw-file error is reported without losing successfully imported daily
+    # rows; callers can retry the raw pass independently.
+    summary = report.as_dict()
+    try:
+        from app.raw_signal_import import import_raw_signals
+
+        summary["raw_signals"] = import_raw_signals(path, engine=engine)
+    except Exception as exc:  # pragma: no cover - defensive around optional index
+        summary["raw_signals"] = {"status": "error", "errors": [{"error": str(exc)}]}
+    return summary
 
 
 def _persist(engine, DailyMetric, accumulators, report: _Report) -> None:
@@ -530,6 +541,16 @@ def _format_summary(summary: dict) -> str:
         lines.append("  errors:")
         for err in summary["errors"]:
             lines.append(f"      {err['file']}: {err['error']}")
+    raw = summary.get("raw_signals")
+    if raw:
+        lines.extend(
+            [
+                "  raw signal index:",
+                f"      status           {raw.get('status', 'unknown')}",
+                f"      files processed  {raw.get('files_processed', 0)}",
+                f"      points inserted  {raw.get('points_inserted', 0)}",
+            ]
+        )
     return "\n".join(lines)
 
 

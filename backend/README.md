@@ -2,8 +2,9 @@
 
 FastAPI + SQLModel backend for the personal health assistant (Fitbit/Google
 Health data + Claude): Google Health OAuth + sync, a Google Takeout backfill
-importer, rolling summary/anomaly computation, and a Claude tool-use layer for
-chat Q&A and sleep coaching over your own data.
+importer, a separate high-resolution raw-signal index, rolling summary/anomaly
+computation, a versioned workspace API, and a Claude tool-use layer for chat Q&A
+and sleep coaching over your own data.
 
 ## Requirements
 
@@ -109,8 +110,10 @@ Notes:
 - **Metrics imported**: `steps`, `resting_heart_rate`,
   `sleep_{light,deep,rem,awake}_minutes`, `spo2`, `hrv`, `weight`,
   `active_zone_minutes`. Intraday heart-rate files are recognised but not
-  imported (there is no daily metric for them). Unrecognised files (e.g.
-  `Profile.json`) are skipped and listed in the summary.
+  written to `daily_metric` (there is no daily metric for them); the separate
+  raw index handles high-resolution Fit JSON, interval CSV, session JSON, and
+  TCX points with provenance. Unrecognised files (e.g. `Profile.json`) are
+  skipped and listed in the summary.
 - **Weight unit**: Takeout weight logs do not record the unit, so values are
   stored as `kg`. If your Fitbit account is set to pounds, convert first or
   adjust `_UNIT_KG` in `app/takeout_import.py`.
@@ -131,12 +134,16 @@ the parser without a real Takeout archive.
   vs. baseline) from `daily_metric`; both the sync job and the Takeout importer
   call it automatically.
 - `app/llm_client.py` is the Claude tool-use layer: `POST /chat` answers
-  questions over your real data (via tools, not a raw data dump in the
-  prompt); `POST /dashboard/sleep-coaching` runs a focused sleep summary. Both
-  need `ANTHROPIC_API_KEY` set and degrade gracefully (a clean error, not a
-  crash) if it's missing or invalid.
+  questions over your real data (via bounded daily, correlation, provenance,
+  and raw-signal tools, not a raw data dump in the prompt); `POST
+  /dashboard/sleep-coaching` runs a focused sleep summary. Both need
+  `ANTHROPIC_API_KEY` set and degrade gracefully (a clean error, not a crash) if
+  it's missing or invalid.
 - `GET /dashboard/summary`, `/dashboard/metrics`, `/dashboard/anomalies` back
   the frontend's charts and anomaly list.
+- `GET /workspace`, `POST /workspace/versions`, and `POST
+  /workspace/restore/{version_id}` persist approved, reversible workspace
+  revisions.
 
 ## Layout
 
@@ -144,15 +151,21 @@ the parser without a real Takeout archive.
 - `app/db.py` — SQLite engine setup; `DATABASE_URL` env var (default `./health.db`).
 - `app/migrations.py` — forward-only local SQLite migration that preserves legacy
   raw records and rebuilds derived summaries.
-- `app/models.py` — SQLModel schema: `OAuthToken`, `DailyMetric`, `DailySummary`.
+- `app/models.py` — SQLModel schema: OAuth/session records, daily metrics,
+  summaries, and `WorkspaceVersion`.
 - `app/session.py` + `app/routes/session.py` — app-level password login (`/session/login|logout|me`), session cookie.
 - `app/auth.py` + `app/routes/auth.py` — Google Health OAuth2 flow, Fernet token encryption, `get_valid_access_token()`.
 - `app/google_health_client.py` — Google Health API HTTP client (data-point fetch, pagination, retry/backoff).
 - `app/sync.py` + `app/routes/sync.py` — scheduled + manual (`POST /sync/run`) sync from Google Health into `daily_metric`.
 - `app/summarize.py` — rolling summary computation (`daily_summary`).
 - `app/takeout_import.py` — one-off Google Takeout (Fitbit) backfill importer (`python -m app.takeout_import <path>`).
+- `app/raw_signal_import.py` — resumable local index for raw/derived Fit JSON,
+  interval CSV, sessions, and TCX track points.
 - `app/llm_client.py` + `app/routes/chat.py` — Claude tool-use chat Q&A over your data.
 - `app/routes/dashboard.py` — chart/anomaly/sleep-coaching read routes.
+- `app/routes/workspace.py` — authenticated version/restore endpoints for the
+  analytical workspace.
 - `scripts/generate_key.py` — one-off random-key generator for `TOKEN_ENCRYPTION_KEY` / `SESSION_SECRET`.
 - `.env.example` — documented environment variables.
-- `tests/` — pytest suite covering summarize, sync, and chat.
+- `tests/` — pytest suite covering summarize, sync, Takeout/raw imports, chat,
+  workspace versions, and AI evidence/action contracts.

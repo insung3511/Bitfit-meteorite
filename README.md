@@ -16,7 +16,10 @@ designed for public hosting or multiple users.
 - Source-aware reconciliation that prefers Fitbit-origin Google Health records
 - Rolling 7-day and 30-day health summaries and anomaly detection
 - A dashboard for health trends, anomalies, and sleep coaching
-- Claude tool-use chat grounded in SQL queries over your stored data
+- A versioned analytical workspace with configurable charts, evidence context,
+  undo/restore, and approval-gated assistant layout proposals
+- Claude tool-use chat grounded in bounded SQL and raw-signal queries over your
+  stored data
 - Password-protected, local-only access with encrypted OAuth token storage
 - Forward-only SQLite migrations that preserve existing local data
 
@@ -26,7 +29,8 @@ designed for public hosting or multiple users.
 Google Health API ─┐
                    ├─> FastAPI backend ─> SQLite ─> summaries/anomalies
 Google Takeout ────┘          │                         │
-                              ├─> Claude tool calls     │
+                              ├─> daily summaries + raw signal index
+                              ├─> Claude evidence/tool calls
                               └─> REST API <─ Next.js frontend
 ```
 
@@ -140,8 +144,11 @@ python -m app.takeout_import "$HOME/Downloads/Takeout/피트니스"
 
 The importer reads the locale-independent daily aggregate columns (including
 Korean `날짜`, `걸음 수`, and `평균 몸무게(kg)`) plus Google Fit sleep-session
-JSON. Per-interval CSV, raw/derived streams, and TCX activities are ignored to
-avoid counting the same activity more than once.
+JSON for the canonical daily tables. It also builds a separate local raw-signal
+index for interval CSV, raw/derived streams, session JSON, and TCX activities.
+Original Takeout files stay outside SQLite, while indexed points retain source
+file and record fingerprints for drill-down and AI provenance. The daily tables
+are not double-counted when raw files contain the same activity.
 
 The importer is idempotent, so importing the same export again does not create
 duplicate daily records.
@@ -174,14 +181,15 @@ npx tsc --noEmit
 npm run build
 ```
 
-The production frontend build downloads Geist fonts through `next/font`, so it
-requires network access to Google Fonts during the build.
+The production frontend uses local system font stacks, so the build does not
+require network access to Google Fonts.
 
 ## Documentation
 
 - [User guide](backend/USER_GUIDE.md)
 - [Backend reference](backend/README.md)
 - [Frontend reference](frontend/README.md)
+- [Implementation and continuation plan](IMPLEMENTATION_PLAN.md)
 
 Keep `.env`, `health.db`, OAuth credentials, encryption keys, and API keys out of
 version control.

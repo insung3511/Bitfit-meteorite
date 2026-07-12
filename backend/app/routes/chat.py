@@ -21,9 +21,15 @@ import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import llm_client
+from app.ai_schemas import (
+    EvidenceReference,
+    StructuredAnalysis,
+    WorkspaceActionProposal,
+    WorkspaceContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,7 @@ class ChatRequest(BaseModel):
 
     message: str
     conversation_history: Optional[list[dict[str, Any]]] = None
+    workspace_context: Optional[WorkspaceContext] = None
 
 
 _MAX_HISTORY_MESSAGES = 24
@@ -46,6 +53,11 @@ class ChatResponse(BaseModel):
 
     reply: str
     conversation_history: list[dict[str, Any]]
+    # Additive fields for visual clients. Older clients can continue to use only
+    # ``reply`` and ``conversation_history``.
+    analysis: Optional[StructuredAnalysis] = None
+    evidence_refs: list[EvidenceReference] = Field(default_factory=list)
+    workspace_actions: list[WorkspaceActionProposal] = Field(default_factory=list)
 
 
 @router.post("", response_model=ChatResponse)
@@ -63,7 +75,16 @@ def chat(request: ChatRequest) -> ChatResponse:
     if history_size > _MAX_HISTORY_BYTES:
         raise HTTPException(status_code=422, detail="Conversation history is too large.")
     try:
-        result = llm_client.chat(request.message, history)
+        if request.workspace_context is None:
+            # Keep the old two-argument call shape for existing integrations and
+            # monkeypatched test clients.
+            result = llm_client.chat(request.message, history)
+        else:
+            result = llm_client.chat(
+                request.message,
+                history,
+                workspace_context=request.workspace_context,
+            )
     except Exception as exc:  # LLM/config/network failure — keep it friendly.
         # The raw exception (e.g. an Anthropic 401) can carry request IDs and
         # other internal detail — log it server-side, never return it verbatim.
@@ -77,4 +98,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(
         reply=result["reply"],
         conversation_history=result["conversation_history"],
+        analysis=result.get("analysis"),
+        evidence_refs=result.get("evidence_refs", []),
+        workspace_actions=result.get("workspace_actions", []),
     )

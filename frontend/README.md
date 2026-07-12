@@ -40,5 +40,11 @@ npm run build
 ## Routes
 
 - `/` — home + backend connectivity status
-- `/chat` — Q&A over your health data (placeholder)
-- `/dashboard` — trends, sleep coaching, anomaly flags (placeholder)
+- `/chat` — Q&A over your health data with server-generated evidence references
+  and approval-gated visual workspace proposals
+- `/dashboard` — configurable trend panels, baselines, anomalies, evidence
+  context, local version history, undo, and sleep coaching
+
+The workspace is stored locally in the browser and keeps stable panel IDs so
+approved assistant proposals can be applied without allowing the model to
+mutate the dashboard directly.

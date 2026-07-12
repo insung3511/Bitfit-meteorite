@@ -1,6 +1,6 @@
 """SQLModel schema for the personal health assistant.
 
-Three tables back the Phase 1 data pipeline:
+The SQLModel tables back the Phase 1 data pipeline and versioned workspace:
 
 * :class:`OAuthToken` — encrypted OAuth credentials for a data provider.
 * :class:`DailyMetric` — flexible raw per-metric daily rows (steps, resting HR,
@@ -110,3 +110,15 @@ class DailySummary(SQLModel, table=True):
         default=None, description="current value minus rolling baseline"
     )
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+
+
+class WorkspaceVersion(SQLModel, table=True):
+    """Versioned dashboard workspace document for the single local user."""
+
+    __tablename__ = "workspace_version"
+
+    id: str = Field(primary_key=True)
+    label: str
+    document_json: str
+    parent_id: Optional[str] = Field(default=None, index=True)
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)

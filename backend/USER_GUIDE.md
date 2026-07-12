@@ -80,15 +80,27 @@ source .venv/bin/activate
 python -m app.takeout_import /path/to/Takeout/Fitbit
 ```
 
+For a Korean legacy Google Fit export, pass the localized folder instead:
+
+```bash
+python -m app.takeout_import "$HOME/Downloads/Takeout/피트니스"
+```
+
 The importer accepts the Fitbit folder from a Google Takeout archive. It is safe
-to run again; already-imported daily records are not duplicated. Takeout fills
-only days without Google Health data, so it does not distort live values.
+to run again; already-imported daily records and raw signal points are not
+duplicated. Daily Takeout rows fill only days without Google Health data, so the
+canonical dashboard values are not averaged with live values. Interval CSV,
+raw/derived JSON, session JSON, and TCX files are indexed separately for
+high-resolution drill-down while the original files remain on disk.
 
 ## Use the App
 
-- **Dashboard**: view rolling trends, anomaly flags, and optional sleep coaching.
-- **Chat**: ask questions about your imported or synced data. Responses are
-  wellness guidance, not medical advice.
+- **Dashboard**: configure trend panels, date windows, chart types, baselines,
+  evidence context, anomalies, and optional sleep coaching. Approved layout
+  proposals create a new local workspace version and can be undone.
+- **Chat**: ask questions about your imported or synced data. Responses expose
+  bounded evidence references and may propose visual changes, but never apply
+  them without approval. Responses are wellness guidance, not medical advice.
 - **Log out**: use the navigation control when you are done on a shared device.
 
 ## Troubleshooting
