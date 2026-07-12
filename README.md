@@ -121,7 +121,7 @@ backend starts; later syncs run every four hours by default.
 The redirect URI must exactly match the URI registered for your Google OAuth
 client.
 
-### Fitbit Google Takeout
+### Google Takeout (Fitbit or legacy Google Fit)
 
 You can use a Fitbit export instead of, or alongside, live synchronization:
 
@@ -130,6 +130,18 @@ cd backend
 source .venv/bin/activate
 python -m app.takeout_import /path/to/Takeout/Fitbit
 ```
+
+For a Korean legacy Google Fit export, pass the localized `피트니스` folder:
+
+```bash
+cd backend
+python -m app.takeout_import "$HOME/Downloads/Takeout/피트니스"
+```
+
+The importer reads the locale-independent daily aggregate columns (including
+Korean `날짜`, `걸음 수`, and `평균 몸무게(kg)`) plus Google Fit sleep-session
+JSON. Per-interval CSV, raw/derived streams, and TCX activities are ignored to
+avoid counting the same activity more than once.
 
 The importer is idempotent, so importing the same export again does not create
 duplicate daily records.

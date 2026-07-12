@@ -14,6 +14,7 @@ const DEFAULT_METRICS: { metric: string; label: string; color: string }[] = [
   { metric: "resting_heart_rate", label: "Resting Heart Rate", color: "var(--series-2)" },
   { metric: "sleep_deep_minutes", label: "Deep Sleep", color: "var(--series-3)" },
   { metric: "sleep_rem_minutes", label: "REM Sleep", color: "var(--series-4)" },
+  { metric: "sleep_minutes", label: "Total Sleep", color: "var(--series-5)" },
   { metric: "hrv", label: "HRV", color: "var(--series-5)" },
   { metric: "spo2", label: "SpO2", color: "var(--series-6)" },
 ];

@@ -1,4 +1,4 @@
-"""One-off importer for Fitbit data exported via Google Takeout.
+"""One-off importer for Fitbit or legacy Google Fit data from Google Takeout.
 
 Google Takeout exports Fitbit data as a tree of JSON files, typically under
 ``Takeout/Fitbit/Global Export Data/`` (plus category folders such as
@@ -34,6 +34,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import json
 import os
@@ -234,6 +235,70 @@ def _parse_azm(data, fallback: Optional[dt.date]) -> Iterable[_Sample]:
             yield _Sample(day, "active_zone_minutes", val, _UNIT_MINUTES, agg="sum")
 
 
+def _parse_google_fit_sleep(data, fallback: Optional[dt.date]) -> Iterable[_Sample]:
+    """Parse a legacy Google Fit sleep session without inventing sleep stages."""
+    if (
+        not isinstance(data, dict)
+        or str(data.get("fitnessActivity", "")).lower() != "sleep"
+    ):
+        return
+    day = fallback or _parse_datetime(str(data.get("endTime", "")))
+    duration = str(data.get("duration", ""))
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)s", duration)
+    seconds = _as_float(match.group(1)) if match else None
+    if day is not None and seconds is not None and seconds > 0:
+        yield _Sample(day, "sleep_minutes", seconds / 60.0, _UNIT_MINUTES, agg="sum")
+
+
+_CSV_ALIASES = {
+    "date": ("date", "날짜"),
+    "steps": ("steps", "step count", "걸음 수"),
+    "weight": ("average weight(kg)", "avg weight(kg)", "평균 몸무게(kg)"),
+}
+
+
+def _csv_value(row: dict[str, str], names: tuple[str, ...]) -> Optional[float]:
+    normalized = {str(key).strip().lower(): value for key, value in row.items()}
+    for name in names:
+        value = _as_float(normalized.get(name.lower()))
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_google_fit_daily_csv(path: str) -> Iterable[_Sample]:
+    """Parse the locale-dependent Google Fit daily aggregate CSV."""
+    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not reader.fieldnames:
+            return
+        normalized_headers = {
+            header.strip().lower() for header in reader.fieldnames
+        }
+        date_headers = {name.lower() for name in _CSV_ALIASES["date"]}
+        if normalized_headers.isdisjoint(date_headers):
+            return
+        for row in reader:
+            normalized = {str(key).strip().lower(): value for key, value in row.items()}
+            raw_date = next(
+                (
+                    normalized[name.lower()]
+                    for name in _CSV_ALIASES["date"]
+                    if normalized.get(name.lower())
+                ),
+                "",
+            )
+            day = _parse_datetime(raw_date)
+            if day is None:
+                continue
+            steps = _csv_value(row, _CSV_ALIASES["steps"])
+            if steps is not None:
+                yield _Sample(day, "steps", steps, _UNIT_COUNT, agg="sum")
+            weight = _csv_value(row, _CSV_ALIASES["weight"])
+            if weight is not None:
+                yield _Sample(day, "weight", weight, _UNIT_KG, agg="mean")
+
+
 def _iter_records(data) -> Iterable[dict]:
     """Yield dict records from a Takeout payload (list, or {"..": [..]})."""
     if isinstance(data, list):
@@ -327,7 +392,7 @@ class _Report:
 
 
 def import_takeout(path: str) -> dict:
-    """Import a Fitbit Google Takeout export into ``DailyMetric``.
+    """Import a Fitbit or legacy Google Fit Takeout export into ``DailyMetric``.
 
     Args:
         path: Directory containing the export (e.g. ``.../Takeout/Fitbit``).
@@ -353,10 +418,27 @@ def import_takeout(path: str) -> dict:
 
     for root, _dirs, files in os.walk(path):
         for filename in sorted(files):
+            full = os.path.join(root, filename)
+            if filename.lower().endswith(".csv"):
+                try:
+                    samples = list(_parse_google_fit_daily_csv(full))
+                    if not samples:
+                        report.files_skipped += 1
+                        report.skipped_files.append(filename)
+                        continue
+                    for sample in samples:
+                        accumulators[(sample.date, sample.metric_name)].add(sample)
+                    report.files_processed += 1
+                except (OSError, csv.Error, UnicodeError) as exc:
+                    report.files_errored += 1
+                    report.errors.append({"file": filename, "error": str(exc)})
+                continue
             if not filename.lower().endswith(".json"):
                 continue
-            full = os.path.join(root, filename)
-            parser, recognised = _classify(filename)
+            if re.search(r"_SLEEP\.json$", filename, re.IGNORECASE):
+                parser, recognised = _parse_google_fit_sleep, True
+            else:
+                parser, recognised = _classify(filename)
 
             if not recognised:
                 report.files_skipped += 1
@@ -424,7 +506,7 @@ def _persist(engine, DailyMetric, accumulators, report: _Report) -> None:
                     unit=acc.unit,
                     source="takeout",
                     provider_record_id=f"takeout:{day.isoformat()}:{metric_name}",
-                    source_platform="FITBIT",
+                    source_platform="TAKEOUT",
                 )
             )
             report.rows_inserted[metric_name] += 1
@@ -454,11 +536,11 @@ def _format_summary(summary: dict) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.takeout_import",
-        description="Import a Fitbit Google Takeout export into DailyMetric.",
+        description="Import a Fitbit or legacy Google Fit Takeout export into DailyMetric.",
     )
     parser.add_argument(
         "path",
-        help="Path to the export directory (e.g. /path/to/Takeout/Fitbit).",
+        help="Path to the Fitbit or Fitness folder inside a Google Takeout export.",
     )
     args = parser.parse_args(argv)
 
