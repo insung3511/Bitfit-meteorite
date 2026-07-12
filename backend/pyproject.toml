@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]",
     "sqlmodel",
     "python-dotenv",
+    "python-multipart",
     "cryptography",
     "apscheduler",
     "anthropic",
