@@ -425,6 +425,85 @@ def _parse_interval_csv(path: str) -> Iterator[RawSignalPoint]:
                 )
 
 
+# Modern Fitbit/Google Health Takeout ships its high-resolution signals as flat
+# "timestamp,value[,data source]" CSVs rather than the Google Fit interval shape
+# above. The metric a file carries is not in its header (the value column is
+# named things like "beats per minute"), so it is keyed off the filename.
+_FITBIT_CSV_FILES: tuple[tuple[re.Pattern, tuple[tuple[tuple[str, ...], str, str], ...]], ...] = (
+    (
+        re.compile(r"heart[_ -]?rate[_ -]?variability[_ -]?details|^heart_rate_variability_"),
+        ((("rmssd",), "hrv", "ms"),),
+    ),
+    (
+        re.compile(r"^minute[_ -]?spo2|^oxygen_saturation_"),
+        ((("value", "average_value"), "spo2", "percent"),),
+    ),
+    (
+        re.compile(r"^body_temperature_|^device[_ -]?temperature"),
+        ((("temperature celsius", "recorded_temperature"), "skin_temperature", "celsius"),),
+    ),
+    (
+        re.compile(r"respiratory[_ -]?rate"),
+        (
+            (("daily_respiratory_rate", "full_sleep_breathing_rate"), "respiratory_rate", "breaths_per_min"),
+        ),
+    ),
+    (re.compile(r"^heart_rate_2|^heart_rate_\d"), ((("beats per minute",), "heart_rate", "bpm"),)),
+    (re.compile(r"^steps_\d"), ((("steps",), "steps_delta", "count"),)),
+    (re.compile(r"^distance_\d"), ((("distance",), "distance", "meters"),)),
+    (re.compile(r"^active_energy_burned_\d"), ((("kilocalories",), "calories", "kcal"),)),
+    (re.compile(r"^floors_\d"), ((("floors",), "floors", "count"),)),
+    (re.compile(r"^hydration_log_\d"), ((("water_amount", "amount"), "hydration", "ml"),)),
+)
+
+
+def _fitbit_csv_fields(basename: str) -> Optional[tuple[tuple[tuple[str, ...], str, str], ...]]:
+    name = basename.lower()
+    for pattern, fields in _FITBIT_CSV_FILES:
+        if pattern.search(name):
+            return fields
+    return None
+
+
+def _parse_fitbit_timeseries_csv(path: str) -> Iterator[RawSignalPoint]:
+    """Index a flat Fitbit ``timestamp,value[,data source]`` CSV."""
+    fields = _fitbit_csv_fields(os.path.basename(path))
+    if fields is None:
+        return
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        headers = {str(name).strip().lower(): name for name in (reader.fieldnames or [])}
+        time_key = headers.get("timestamp") or headers.get("date_time")
+        if not time_key:
+            return
+        source_key = headers.get("data source")
+        for row_index, row in enumerate(reader):
+            timestamp = _timestamp(str(row.get(time_key) or ""))
+            if timestamp is None:
+                continue
+            device = str(row.get(source_key) or "").strip() if source_key else None
+            for value_index, (aliases, metric, unit) in enumerate(fields):
+                key = next((headers[alias] for alias in aliases if alias in headers), None)
+                if key is None:
+                    continue
+                number = _number(row.get(key))
+                if number is None:
+                    continue
+                yield RawSignalPoint(
+                    timestamp=timestamp,
+                    end_timestamp=timestamp,
+                    metric_name=metric,
+                    signal_type="fitbit_timeseries",
+                    value_float=number,
+                    unit=unit,
+                    data_source=f"fitbit_takeout:{device}" if device else "fitbit_takeout",
+                    source_kind="fitbit_csv",
+                    source_record_index=row_index,
+                    source_value_index=value_index,
+                    metadata={"device": device} if device else None,
+                )
+
+
 def _local_tag(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -486,6 +565,8 @@ def _file_result(path: str) -> Optional[_FileResult]:
     if suffix == ".tcx":
         return _FileResult("tcx", _parse_tcx(path))
     if suffix == ".csv":
+        if _fitbit_csv_fields(os.path.basename(path)) is not None:
+            return _FileResult("fitbit_csv", _parse_fitbit_timeseries_csv(path))
         return _FileResult("interval_csv", _parse_interval_csv(path))
     if suffix != ".json":
         return None
@@ -616,16 +697,51 @@ def import_raw_signals(path: str, engine=None, *, cancel_check: Optional[Callabl
     return report
 
 
+# The daily rollup layer (``daily_metric``) and the raw index use different
+# vocabularies for the same signal: a chart asks for "steps", but the indexed
+# points are named "steps_delta". Callers drill down from a daily metric, so the
+# daily name is the public one and is expanded to every raw name that backs it.
+RAW_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "steps": ("steps", "steps_delta"),
+    "resting_heart_rate": ("heart_rate",),
+    "nrem_heart_rate": ("heart_rate",),
+    "sleep_minutes": ("sleep_stage", "sleep_segment", "sleep_session"),
+    "sleep_deep_minutes": ("sleep_stage",),
+    "sleep_light_minutes": ("sleep_stage",),
+    "sleep_rem_minutes": ("sleep_stage",),
+    "sleep_awake_minutes": ("sleep_stage",),
+    "sleep_score": ("sleep_stage", "sleep_session"),
+    "very_active_minutes": ("activity_segment", "activity_session"),
+    "moderately_active_minutes": ("activity_segment", "activity_session"),
+    "lightly_active_minutes": ("activity_segment", "activity_session"),
+    "active_zone_minutes": ("activity_segment", "activity_session"),
+}
+
+
+def resolve_raw_metric_names(metric_name: str) -> tuple[str, ...]:
+    """Expand a daily metric name to the raw signal names that back it."""
+    return RAW_METRIC_ALIASES.get(metric_name, (metric_name,))
+
+
 def query_raw_signals(metric_name: Optional[str] = None, start: Optional[dt.datetime] = None, end: Optional[dt.datetime] = None, *, limit: int = 10_000, engine=None) -> list[dict[str, Any]]:
-    """Read a bounded set of indexed points for chart/AI query layers."""
+    """Read a bounded set of indexed points for chart/AI query layers.
+
+    ``metric_name`` accepts either a raw signal name or the daily metric name a
+    chart drills down from (see :data:`RAW_METRIC_ALIASES`).
+    """
     engine = _get_engine(engine)
     ensure_raw_signal_schema(engine)
     limit = max(1, min(int(limit), 100_000))
     clauses = []
     params: dict[str, Any] = {"limit": limit}
     if metric_name:
-        clauses.append("metric_name = :metric")
-        params["metric"] = metric_name
+        names = resolve_raw_metric_names(metric_name)
+        placeholders = []
+        for index, name in enumerate(names):
+            key = f"metric_{index}"
+            placeholders.append(f":{key}")
+            params[key] = name
+        clauses.append(f"metric_name IN ({', '.join(placeholders)})")
     if start:
         clauses.append("timestamp >= :start")
         params["start"] = start.isoformat()
