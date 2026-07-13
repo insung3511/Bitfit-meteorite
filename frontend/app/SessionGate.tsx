@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -74,8 +75,16 @@ export default function SessionGate({
 
   if (status === undefined) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center text-sm text-black/40 dark:text-white/40">
-        Loading…
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="skeleton-shimmer h-12 w-12 rounded-full" />
+          <div className="skeleton-shimmer h-4 w-32" />
+        </motion.div>
       </div>
     );
   }

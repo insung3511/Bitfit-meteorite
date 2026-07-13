@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-export default function LogoutButton() {
+export default function LogoutButton({ compact = false }: { compact?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -27,9 +27,11 @@ export default function LogoutButton() {
     <button
       type="button"
       onClick={handleLogout}
-      className="ml-auto rounded border border-white/20 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-white/65 hover:bg-white/10 hover:text-white"
+      className={compact ? "dock-button" : "glass-chip"}
+      title="Log out"
+      aria-label="Log out"
     >
-      Log out
+      {compact ? "↗" : "Log out"}
     </button>
   );
 }

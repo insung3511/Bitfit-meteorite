@@ -14,11 +14,24 @@
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Component scope | **Core kit + app patterns** | Full reusable vocabulary + composites, so the design agent can build real screens. |
+| Component scope | **Core kit + app patterns + 2 reference-inspired** | Full reusable vocabulary + composites + `StatTile`/`Badge` drawn from the `design/` references. |
 | Preview source | **Storybook** | design-sync captures + verifies previews from the real Storybook render — highest fidelity. |
 | App refactor | **None now** | Standalone package first; no risk to in-flight app branch. |
-| Styling approach | **A — keep Tailwind utilities, ship compiled CSS** | Zero component rewriting, exact parity with the app, tokens preserved. |
+| Styling approach | **A — keep Tailwind utilities, ship compiled CSS** | Zero component rewriting, existing components keep app parity; aesthetic lean is additive. |
+| Design references | **Ship as guidelines + extend components** | Moodboard images + style note uploaded to the design project; new components + heading/number type treatment embody the aesthetic. |
 | Package build | **tsup (esbuild)** | Simplest esbuild-based library build; design-sync bundles esbuild output. |
+
+### Design references / aesthetic direction
+
+`design/references/` holds seven inspiration images the user curated. They share a coherent language:
+
+- **Swiss / International Typographic Style** (NYC Underground signage, Zürich Card) — bold grotesque type (Helvetica/Arial family, which the app already uses), black headers, high-contrast **saturated color-coding**, strong grid, big legible numerals.
+- **Dark-mode data widgets** (Apple Watch faces, Velovories) — compact **"big number + label + unit + mini-chart"** metric tiles on dark canvases, vivid categorical accents.
+
+This maps directly onto the app's existing `--series-*` categorical palette and health-metric domain. Incorporated two ways:
+
+1. **Guidelines upload** — the seven images are copied into the design-sync output under `guidelines/` alongside a short `guidelines/aesthetic.md` style note, so the claude.ai/design agent sees the moodboard.
+2. **Component extension** — two new components (`StatTile`, `Badge`) embody the tile/route-bullet patterns, and a heading/number **type treatment** (heavier weight, tighter tracking on headings and numerals) leans the system toward the bold Swiss look. Applied additively: existing components keep app parity; only the new components and an opt-in heading/`.stat-number` treatment carry the lean.
 
 ### Rejected alternatives
 
@@ -50,6 +63,8 @@ bitfit_meteorite/
 │       │   ├── Input.tsx
 │       │   ├── Select.tsx
 │       │   ├── Alert.tsx
+│       │   ├── Badge.tsx        ← NEW (reference-inspired)
+│       │   ├── StatTile.tsx     ← NEW (reference-inspired)
 │       │   ├── AppHeader.tsx
 │       │   ├── MetricChart.tsx
 │       │   ├── WorkspacePanel.tsx
@@ -59,6 +74,8 @@ bitfit_meteorite/
 │       └── .storybook/
 │           ├── main.ts        framework: react-vite (or @storybook/react); stories glob src/**/*.stories.tsx
 │           └── preview.ts     imports "../src/styles.css" so previews carry tokens + utilities
+├── design/
+│   └── references/           existing 7 inspiration images (copied into design-sync guidelines/ at sync time)
 └── docs/superpowers/specs/2026-07-12-bitfit-ui-design-system-design.md
 ```
 
@@ -73,6 +90,8 @@ Each is a single-purpose, props-only unit — no `fetch`, no `localStorage`, no 
 - **Input** — bordered transparent text field from the login form. Props: standard input props + `invalid?`.
 - **Select** — bordered transparent select from WorkspacePanel controls. Props: standard select props + `label?`.
 - **Alert** — red bordered callout (`role="alert"`) from the dashboard error/backend states. Props: `tone` (`error` initially; `info` optional), `children`.
+- **Badge** — reference-inspired color-coded pill/bullet (Zürich Card bars, MTA route bullets). Props: `color` (a `--series-*` var ref or CSS color), `variant` (`pill` | `bullet`), `children`. Bold, high-contrast, white text on saturated fill. Used to label metrics/categories.
+- **StatTile** — reference-inspired metric tile (Apple Watch / Velovories widgets): big number + label + unit, optional trend/mini-chart slot, optional accent color. Props: `label`, `value` (string|number), `unit?`, `caption?`, `accent?` (color var), `chart?` (ReactNode — e.g. an embedded `MetricChart`), `tone` (`light` | `dark`). Uses the `.stat-number` type treatment (heavy weight, tight tracking).
 - **AppHeader** — the nav bar from `layout.tsx`: brand link + nav links + right slot. Props: `brand`, `links: {label, href}[]`, `right?` (ReactNode, e.g. a logout Button). Uses plain `<a>` (no `next/link`) so it renders standalone.
 
 ### Data-viz
@@ -93,6 +112,7 @@ None at runtime beyond props. Components are pure/presentational; the only state
 
 - `tokens.css` holds every custom property currently in `frontend/app/globals.css`: `--background`, `--foreground`, `--viz-surface`, `--viz-muted`, `--viz-grid`, `--viz-axis`, `--series-1..6` — with the existing light values, the `@media (prefers-color-scheme: dark)` block, **and** a `:root[data-theme="dark"]` / `:root[data-theme="light"]` override so claude.ai/design's theme toggle (which stamps `data-theme`) switches themes deterministically.
 - `styles.css` is the Tailwind v4 entry: `@import "tailwindcss";` + `@source` pointed at the component sources so only used utilities compile, + `@import "./tokens.css";`. The CSS build (`@tailwindcss/cli`) emits `dist/styles.css` — the single stylesheet design-sync ships; its `@import` closure carries both utilities and tokens.
+- **Type treatment (reference lean):** `tokens.css` adds a `.stat-number` class (heavy weight ~700, tight `letter-spacing`, tabular numerals via `font-variant-numeric: tabular-nums`) for big metric values, used by `StatTile`. Headings in new components use bolder weights. The base font family stays the app's grotesque stack (`Arial, Helvetica, sans-serif`) — already Swiss-appropriate — so no web-font is added. Existing components' type is unchanged (parity preserved).
 
 ## Build
 
@@ -104,7 +124,8 @@ None at runtime beyond props. Components are pure/presentational; the only state
 ## design-sync integration
 
 - Shape: **storybook**. `.design-sync/config.json` records `shape: "storybook"`, `storybookConfigDir: "packages/ui/.storybook"`, a `globalName`, and `readmeHeader: ".design-sync/conventions.md"`.
-- Conventions header teaches the design agent: the Tailwind utility idiom (with a family table of the real class names used — `bg-[var(--viz-surface)]`, `border-black/10`, `rounded-xl`, the `--series-*` token refs), the token vars, dark-mode via `data-theme`, and one idiomatic build snippet.
+- Conventions header teaches the design agent: the Tailwind utility idiom (with a family table of the real class names used — `bg-[var(--viz-surface)]`, `border-black/10`, `rounded-xl`, the `--series-*` token refs), the token vars, the `.stat-number` treatment, dark-mode via `data-theme`, and one idiomatic build snippet.
+- **Guidelines:** the 7 `design/references/*.jpg` images are copied into the output `guidelines/` dir, plus `guidelines/aesthetic.md` — a short written style note naming the Swiss-type + dark-tile direction and how it maps to the tokens/components. design-sync ships `guidelines/**` to the project so the agent sees the moodboard.
 - A new claude.ai/design project is created for the first sync.
 
 ## Testing / verification

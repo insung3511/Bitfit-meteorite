@@ -57,14 +57,19 @@ function ChartTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="rounded border border-[var(--line-strong)] bg-[var(--paper)] px-2.5 py-1.5 text-xs shadow-lg">
-      <div className="eyebrow">{typeof label === "string" ? shortDate(label) : label}</div>
+    <div className="rounded-xl border border-[var(--line-strong)] bg-[var(--paper)] px-3 py-2 text-xs shadow-xl backdrop-blur-md">
+      <div className="eyebrow">
+        {typeof label === "string" ? shortDate(label) : label}
+      </div>
       {payload.map((entry, index) => {
         const raw = entry.value;
         const value =
           typeof raw === "number" ? formatValue(raw) : String(raw ?? "");
         return (
-          <div key={`${entry.name ?? "value"}-${index}`} className="text-[var(--ink-soft)]">
+          <div
+            key={`${entry.name ?? "value"}-${index}`}
+            className="text-[var(--ink-soft)]"
+          >
             {entry.name ?? "Value"}: <span className="font-mono">{value}</span>
           </div>
         );
@@ -89,17 +94,27 @@ export default function MetricChart({
   embedded = false,
 }: Props) {
   const gradientId = `grad-${label.replace(/[^a-z0-9]/gi, "")}`;
-  const hasData = points.some((p) => p.mean_7d != null || p.mean_30d != null);
+  const glowId = `glow-${label.replace(/[^a-z0-9]/gi, "")}`;
+  const hasData = points.some(
+    (p) => p.mean_7d != null || p.mean_30d != null,
+  );
 
   const chart = hasData ? (
     <div className="h-44 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+        <ComposedChart
+          data={points}
+          margin={{ top: 4, right: 8, bottom: 0, left: 0 }}
+        >
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity={0.22} />
+              <stop offset="0%" stopColor={color} stopOpacity={0.35} />
               <stop offset="100%" stopColor={color} stopOpacity={0} />
             </linearGradient>
+            <filter id={glowId} x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
           </defs>
           <CartesianGrid
             stroke="var(--viz-grid)"
@@ -109,14 +124,22 @@ export default function MetricChart({
           <XAxis
             dataKey="date"
             tickFormatter={shortDate}
-            tick={{ fontSize: 10, fill: "var(--viz-muted)", fontWeight: 700 }}
+            tick={{
+              fontSize: 10,
+              fill: "var(--viz-muted)",
+              fontWeight: 700,
+            }}
             tickLine={false}
             axisLine={{ stroke: "var(--viz-axis)" }}
             minTickGap={24}
           />
           <YAxis
             tickFormatter={formatValue}
-            tick={{ fontSize: 10, fill: "var(--viz-muted)", fontWeight: 700 }}
+            tick={{
+              fontSize: 10,
+              fill: "var(--viz-muted)",
+              fontWeight: 700,
+            }}
             tickLine={false}
             axisLine={false}
             width={40}
@@ -131,8 +154,9 @@ export default function MetricChart({
               name="7-day mean"
               fill={color}
               fillOpacity={0.72}
-              radius={[2, 2, 0, 0]}
-              isAnimationActive={false}
+              radius={[4, 4, 0, 0]}
+              animationDuration={800}
+              animationEasing="ease-out"
             />
           ) : chartType === "line" ? (
             <Line
@@ -140,11 +164,13 @@ export default function MetricChart({
               dataKey="mean_7d"
               name="7-day mean"
               stroke={color}
-              strokeWidth={2}
+              strokeWidth={2.5}
               dot={false}
-              activeDot={{ r: 4, strokeWidth: 0 }}
+              activeDot={{ r: 5, strokeWidth: 0, fill: color }}
               connectNulls
-              isAnimationActive={false}
+              animationDuration={1000}
+              animationEasing="ease-out"
+              filter={`url(#${glowId})`}
             />
           ) : (
             <Area
@@ -152,12 +178,14 @@ export default function MetricChart({
               dataKey="mean_7d"
               name="7-day mean"
               stroke={color}
-              strokeWidth={2}
+              strokeWidth={2.5}
               fill={`url(#${gradientId})`}
               dot={false}
-              activeDot={{ r: 4, strokeWidth: 0 }}
+              activeDot={{ r: 5, strokeWidth: 0, fill: color }}
               connectNulls
-              isAnimationActive={false}
+              animationDuration={1000}
+              animationEasing="ease-out"
+              filter={`url(#${glowId})`}
             />
           )}
           {showBaseline && (
@@ -170,7 +198,8 @@ export default function MetricChart({
               strokeWidth={1.5}
               dot={false}
               connectNulls
-              isAnimationActive={false}
+              animationDuration={800}
+              animationEasing="ease-out"
             />
           )}
         </ComposedChart>

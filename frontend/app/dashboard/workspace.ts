@@ -1,5 +1,6 @@
 export type ChartType = "area" | "line" | "bar";
 export type RangeDays = 7 | 30 | 90;
+export type PanelSize = "small" | "medium" | "large";
 
 export type MetricDefinition = {
   metric: string;
@@ -16,6 +17,7 @@ export type WorkspacePanel = {
   rangeDays: RangeDays;
   showBaseline: boolean;
   color: string;
+  size?: PanelSize;
 };
 
 export type WorkspaceVersion = {
@@ -52,34 +54,36 @@ export type WorkspaceActionProposal = {
   evidence: EvidenceReference[];
 };
 
+/* ── Metric catalog with unique colors (inspired by Velovories / Zürich Card) ── */
 export const METRIC_CATALOG: MetricDefinition[] = [
-  { metric: "steps", label: "Steps", color: "var(--series-1)", unit: "steps" },
+  { metric: "steps", label: "Steps", color: "var(--metric-steps)", unit: "steps" },
   {
     metric: "resting_heart_rate",
     label: "Resting Heart Rate",
-    color: "var(--series-2)",
+    color: "var(--metric-resting_heart_rate)",
     unit: "bpm",
   },
   {
     metric: "sleep_deep_minutes",
     label: "Deep Sleep",
-    color: "var(--series-3)",
+    color: "var(--metric-sleep_deep_minutes)",
     unit: "minutes",
   },
   {
     metric: "sleep_rem_minutes",
     label: "REM Sleep",
-    color: "var(--series-4)",
+    color: "var(--metric-sleep_rem_minutes)",
     unit: "minutes",
   },
   {
     metric: "sleep_minutes",
     label: "Total Sleep",
-    color: "var(--series-5)",
+    color: "var(--metric-sleep_minutes)",
     unit: "minutes",
   },
-  { metric: "hrv", label: "HRV", color: "var(--series-6)", unit: "ms" },
-  { metric: "spo2", label: "SpO2", color: "var(--series-6)", unit: "%" },
+  { metric: "hrv", label: "HRV", color: "var(--metric-hrv)", unit: "ms" },
+  { metric: "spo2", label: "SpO2", color: "var(--metric-spo2)", unit: "%" },
+  { metric: "weight", label: "Weight", color: "var(--metric-weight)", unit: "kg" },
 ];
 
 export function metricDefinition(metric: string): MetricDefinition {
@@ -91,7 +95,7 @@ export function metricDefinition(metric: string): MetricDefinition {
       .split("_")
       .map((word) => word[0]?.toUpperCase() + word.slice(1))
       .join(" "),
-    color: "var(--series-1)",
+    color: "var(--signal-active)",
     unit: "value",
   };
 }
@@ -106,11 +110,12 @@ function stablePanel(metric: string, index: number): WorkspacePanel {
     rangeDays: 30,
     showBaseline: true,
     color: definition.color,
+    size: index === 0 ? "large" : "medium",
   };
 }
 
 export function createDefaultWorkspace(): WorkspaceDocument {
-  const panels = ["steps", "sleep_minutes", "resting_heart_rate"].map(stablePanel);
+  const panels = ["steps", "sleep_minutes", "weight"].map(stablePanel);
   return {
     active: {
       id: "version-default",
