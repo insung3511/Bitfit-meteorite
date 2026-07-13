@@ -48,3 +48,9 @@ yarn-error.log*
 .design-sync/node_modules
 .ds-sync/
 ds-bundle/
+
+# Database backups and dumps (health data — never commit)
+*.db.*
+*.sqlite
+*.sqlite3
+health.db*
