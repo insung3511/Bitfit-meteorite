@@ -29,9 +29,10 @@ import json
 import math
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import anthropic
+from sqlalchemy import func, text
 from sqlmodel import Session, select
 
 from app.db import engine
@@ -56,6 +57,10 @@ MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 _MAX_TOKENS = 2048
 _MAX_TOOL_ROUNDS = 8
 
+# Must match StructuredAnalysis.narrative's own max_length. A model reply that is
+# truncated mid-JSON falls back to the raw text, which can exceed it.
+_MAX_NARRATIVE_CHARS = 16_000
+
 # Anomaly threshold: a metric-day is anomalous when its deviation from baseline
 # exceeds this many rolling-30-day standard deviations.
 _ANOMALY_SIGMA = 2.0
@@ -79,6 +84,10 @@ SYSTEM_PROMPT = (
     "state a value, trend, average, or anomaly, it must come from a tool call you "
     "made in this conversation. If the tools return no data for what the user asked, "
     "say so plainly rather than guessing.\n\n"
+    "Always call list_available_metrics before you query any metric. Which metrics "
+    "exist depends on the user's devices and imports — never assume a metric is "
+    "present or absent, and never guess a metric name. Metrics you have not seen "
+    "before are still real data worth analysing.\n\n"
     "When you give concrete suggestions (sleep, exercise, recovery, habits), keep them "
     "practical and encouraging, and explicitly note that they are general wellness "
     "guidance, not medical advice, and that the user should consult a qualified "
@@ -455,7 +464,7 @@ def query_raw_health_signals(
     metric_name: str,
     start_date: str,
     end_date: str,
-    limit: int = _MAX_RAW_POINTS,
+    limit: int = 500,
 ) -> dict[str, Any]:
     """Read high-resolution Takeout points through the bounded raw-signal index."""
     if limit <= 0 or limit > _MAX_RAW_POINTS:
@@ -508,6 +517,123 @@ def query_raw_health_signals(
         "record_ids": [str(row["record_id"]) for row in records if row["record_id"]],
         "sources": sorted({str(row["source"]) for row in records if row["source"]}),
         "truncated": truncated,
+    }
+
+
+def list_available_metrics() -> dict[str, Any]:
+    """List every metric actually present in the database, with its coverage.
+
+    The agent must call this before assuming a metric exists. Hardcoding metric
+    names in a tool description is how the agent went blind to two thirds of the
+    imported metrics; the catalogue lives in the data, not in a prompt.
+    """
+    with Session(engine) as session:
+        rows = session.exec(
+            select(
+                DailyMetric.metric_name,
+                DailyMetric.unit,
+                func.count(DailyMetric.id),
+                func.min(DailyMetric.date),
+                func.max(DailyMetric.date),
+            )
+            .group_by(DailyMetric.metric_name, DailyMetric.unit)
+            .order_by(DailyMetric.metric_name)
+        ).all()
+
+    metrics = [
+        {
+            "metric": name,
+            "unit": unit,
+            "count": count,
+            "first_date": first.isoformat() if first else None,
+            "last_date": last.isoformat() if last else None,
+        }
+        for name, unit, count, first, last in rows
+    ]
+    return {"count": len(metrics), "metrics": metrics}
+
+
+def list_raw_signal_types(metric: str) -> dict[str, Any]:
+    """Report which high-resolution signals back a daily metric, if any.
+
+    The daily rollup layer and the raw index use different vocabularies (a chart
+    says ``steps``; the indexed points are ``steps_delta``). This resolves the
+    daily name to the raw names ``query_raw_health_signals`` will actually match,
+    and reports how many points exist, so the agent knows whether a drill-down is
+    possible before attempting one.
+    """
+    from app.raw_signal_import import ensure_raw_signal_schema, resolve_raw_metric_names
+
+    names = resolve_raw_metric_names(metric)
+    ensure_raw_signal_schema(engine)
+    placeholders = ", ".join(f":m{index}" for index in range(len(names)))
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT metric_name, signal_type, COUNT(*) AS n, "
+                "MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts "
+                f"FROM raw_signal WHERE metric_name IN ({placeholders}) "
+                "GROUP BY metric_name, signal_type ORDER BY n DESC"
+            ),
+            {f"m{index}": name for index, name in enumerate(names)},
+        ).all()
+
+    signals = [
+        {
+            "raw_metric": row[0],
+            "signal_type": row[1],
+            "count": row[2],
+            "first_timestamp": row[3],
+            "last_timestamp": row[4],
+        }
+        for row in rows
+    ]
+    return {
+        "metric": metric,
+        "raw_metric_names": list(names),
+        "has_raw_data": bool(signals),
+        "signals": signals,
+    }
+
+
+def accept_health_plan(**plan: Any) -> dict[str, Any]:
+    """Acknowledge a submitted deep-research plan.
+
+    The plan is not persisted from here. ``app.research`` reads it back out of the
+    tool-call history and re-validates it against the evidence the server actually
+    minted, so a plan can never be stored just because the model asserted it. This
+    backend exists so the tool call resolves cleanly and the model can finish its
+    turn.
+    """
+    targets = plan.get("targets") or []
+    return {
+        "accepted": True,
+        "target_count": len(targets),
+        "note": (
+            "Plan received. Targets citing evidence IDs that were not returned by "
+            "a tool in this run will be discarded before the plan is saved."
+        ),
+    }
+
+
+def accept_analysis(**analysis: Any) -> dict[str, Any]:
+    """Acknowledge submitted structured findings.
+
+    Like :func:`accept_health_plan`, this does not persist anything: the caller
+    re-reads the submission from the tool-call history and re-grounds every claim
+    against the evidence the server actually minted.
+    """
+    counts = {
+        key: len(analysis.get(key) or [])
+        for key in ("observations", "hypotheses", "uncertainties")
+    }
+    return {
+        "accepted": True,
+        **counts,
+        "note": (
+            "Findings received. Any claim citing an evidence ID that no tool in "
+            "this run returned will be dropped before the report is saved."
+        ),
     }
 
 
@@ -564,15 +690,44 @@ def propose_workspace_action(
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
+        "name": "list_available_metrics",
+        "description": (
+            "List every metric that actually exists in the user's database, with "
+            "its unit, observation count, and date coverage. Call this FIRST, "
+            "before any other data tool. Do not assume a metric exists or guess "
+            "its name — the set of metrics depends on which devices and exports "
+            "the user has imported, and it changes over time."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_raw_signal_types",
+        "description": (
+            "Check whether a daily metric has high-resolution data underneath it "
+            "and what the raw signals are called. Call this before "
+            "query_raw_health_signals: the daily name and the raw name differ "
+            "(daily 'steps' is stored raw as 'steps_delta'), and some daily "
+            "metrics are derived with no raw form at all."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "description": "The daily metric name to resolve, e.g. 'steps'.",
+                },
+            },
+            "required": ["metric"],
+        },
+    },
+    {
         "name": "query_health_data",
         "description": (
             "Query the user's historical health data for a single metric over a "
             "date range, returning an aggregate (mean/min/max) or the raw daily "
             "series. Use this for questions about levels, trends, or comparisons "
-            "over a time window. Common metric names: steps, resting_heart_rate, "
-            "hrv, spo2, weight, active_zone_minutes, sleep_deep_minutes, "
-            "sleep_rem_minutes, sleep_light_minutes, sleep_awake_minutes, "
-            "sleep_minutes."
+            "over a time window. Get valid metric names from list_available_metrics "
+            "— never guess them."
         ),
         "input_schema": {
             "type": "object",
@@ -698,16 +853,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "query_raw_health_signals",
         "description": (
-            "Query high-resolution interval, session, or track points imported "
-            "from Google Fit Takeout. Results are bounded and include source-file "
-            "provenance; use this for drill-downs below the daily chart level."
+            "Query high-resolution interval, session, sample, or track points "
+            "imported from Takeout. Results are bounded and include source-file "
+            "provenance; use this for drill-downs below the daily chart level. "
+            "Call list_raw_signal_types first to confirm the metric has raw data. "
+            "Accepts either a daily metric name ('steps') or a raw signal name "
+            "('steps_delta') — daily names are resolved for you."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "metric_name": {
                     "type": "string",
-                    "description": "Raw signal metric, e.g. heart_rate or steps_delta.",
+                    "description": "Daily metric or raw signal name, e.g. 'steps' or 'heart_rate'.",
                 },
                 "start_date": {
                     "type": "string",
@@ -762,6 +920,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 # Maps each tool name to its Python backend.
 _TOOL_FUNCTIONS = {
+    "list_available_metrics": list_available_metrics,
+    "list_raw_signal_types": list_raw_signal_types,
     "query_health_data": query_health_data,
     "get_daily_summary": get_daily_summary,
     "get_anomalies": get_anomalies,
@@ -769,6 +929,8 @@ _TOOL_FUNCTIONS = {
     "get_data_provenance": get_data_provenance,
     "query_raw_health_signals": query_raw_health_signals,
     "propose_workspace_action": propose_workspace_action,
+    "propose_health_plan": accept_health_plan,
+    "submit_analysis": accept_analysis,
 }
 
 
@@ -826,8 +988,76 @@ def _evidence_for_tool(
     )
 
 
-def _dispatch_tool(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-    """Execute a tool by name with Claude-provided input; never raises."""
+# The model reasons over shapes and magnitudes, not over thousands of rows — and
+# every tool result is resent on every subsequent round, so anything unbounded
+# here compounds until the request exceeds the context window. These caps decide
+# what Claude *sees*; the full evidence (including every record id) is collected
+# server-side and returned to the client untouched.
+_MODEL_SAMPLE_ROWS = 25
+_MODEL_RECORD_IDS = 20
+
+# Keys whose payloads are large and are summarised before Claude sees them.
+_BULK_KEYS = ("records", "series", "pairs")
+
+
+def _model_projection(result: dict[str, Any]) -> dict[str, Any]:
+    """Bound a tool result to what is useful to the model.
+
+    Long row sets are replaced by descriptive statistics plus a small evenly
+    spaced sample. The untruncated ``count`` is always preserved, so the model
+    still knows how much data stands behind the numbers it is given.
+    """
+    projected = {
+        key: value
+        for key, value in result.items()
+        if key not in _BULK_KEYS and key != "evidence_refs"
+    }
+
+    record_ids = result.get("record_ids")
+    if isinstance(record_ids, list) and len(record_ids) > _MODEL_RECORD_IDS:
+        projected["record_ids"] = record_ids[:_MODEL_RECORD_IDS]
+        projected["record_ids_omitted"] = len(record_ids) - _MODEL_RECORD_IDS
+
+    for key in _BULK_KEYS:
+        rows = result.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        values = [
+            row.get("value")
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("value"), (int, float))
+        ]
+        if values:
+            projected[f"{key}_stats"] = {
+                "n": len(values),
+                "min": min(values),
+                "max": max(values),
+                "mean": sum(values) / len(values),
+            }
+        if len(rows) <= _MODEL_SAMPLE_ROWS:
+            projected[key] = rows
+            continue
+        step = math.ceil(len(rows) / _MODEL_SAMPLE_ROWS)
+        sample = rows[::step][: _MODEL_SAMPLE_ROWS - 1] + [rows[-1]]
+        projected[key] = sample
+        projected[f"{key}_sampled"] = True
+        projected[f"{key}_total"] = len(rows)
+    return projected
+
+
+def _dispatch_tool(
+    name: str,
+    tool_input: dict[str, Any],
+    evidence_sink: list[EvidenceReference] | None = None,
+    action_sink: list[WorkspaceActionProposal] | None = None,
+) -> dict[str, Any]:
+    """Execute a tool by name with Claude-provided input; never raises.
+
+    Returns the *model-facing* projection of the result. Full evidence and any
+    workspace proposal are appended to the sinks instead of being round-tripped
+    through the conversation, which keeps the transcript bounded no matter how
+    much data a tool touched.
+    """
     func = _TOOL_FUNCTIONS.get(name)
     if func is None:
         return {"error": f"Unknown tool: {name}"}
@@ -835,10 +1065,18 @@ def _dispatch_tool(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         result = func(**tool_input)
         evidence = _evidence_for_tool(name, tool_input, result)
         if evidence is not None:
+            if evidence_sink is not None:
+                evidence_sink.append(evidence)
             result = dict(result)
             result["evidence_id"] = evidence.evidence_id
-            result["evidence_refs"] = [evidence.model_dump(mode="json")]
-        return result
+        if action_sink is not None and isinstance(result.get("proposal"), dict):
+            try:
+                action_sink.append(
+                    WorkspaceActionProposal.model_validate(result["proposal"])
+                )
+            except Exception:
+                pass
+        return _model_projection(result)
     except Exception as exc:  # surface the error to Claude as a tool result
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -879,24 +1117,47 @@ def _build_system_prompt(workspace_context: WorkspaceContext | None = None) -> s
     )
 
 
+class AgentCancelled(Exception):
+    """Raised when a caller's ``cancel_check`` asks the tool loop to stop."""
+
+
 def _run_agent(
     messages: list[dict[str, Any]],
     workspace_context: WorkspaceContext | None = None,
+    *,
+    max_tokens: int = _MAX_TOKENS,
+    max_rounds: int = _MAX_TOOL_ROUNDS,
+    system: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    on_round: Callable[[int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    evidence_sink: list[EvidenceReference] | None = None,
+    action_sink: list[WorkspaceActionProposal] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Drive the full tool-use loop until Claude returns a final text answer.
 
     ``messages`` is mutated/extended in place with assistant turns (serialized to
     plain dicts so the history stays JSON-serializable for session persistence) and
     tool-result turns. Returns the final assistant text and the updated history.
+
+    The budget and tool set are parameters so a long-running deep-research run can
+    use a much larger loop than an interactive chat turn without forking this
+    function. ``cancel_check`` is polled between rounds (same contract as
+    ``raw_signal_import.import_raw_signals``) so a cancelled job stops promptly.
     """
     client = _get_client()
+    active_tools = TOOL_SCHEMAS if tools is None else tools
 
-    for _ in range(_MAX_TOOL_ROUNDS + 1):
+    for round_index in range(max_rounds + 1):
+        if cancel_check is not None and cancel_check():
+            raise AgentCancelled()
+        if on_round is not None:
+            on_round(round_index)
         response = client.messages.create(
             model=MODEL,
-            max_tokens=_MAX_TOKENS,
-            system=_build_system_prompt(workspace_context),
-            tools=TOOL_SCHEMAS,
+            max_tokens=max_tokens,
+            system=system or _build_system_prompt(workspace_context),
+            tools=active_tools,
             messages=messages,
         )
 
@@ -913,7 +1174,9 @@ def _run_agent(
         tool_results: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "tool_use":
-                result = _dispatch_tool(block.name, dict(block.input))
+                result = _dispatch_tool(
+                    block.name, dict(block.input), evidence_sink, action_sink
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -925,7 +1188,9 @@ def _run_agent(
         messages.append({"role": "user", "content": tool_results})
 
     else:
-        raise RuntimeError("The assistant exceeded the maximum number of tool rounds.")
+        raise RuntimeError(
+            f"The assistant exceeded the maximum number of tool rounds ({max_rounds})."
+        )
 
     final_text = "".join(
         block.get("text", "")
@@ -1019,12 +1284,31 @@ def _normalise_action_payload(raw: Any) -> dict[str, Any] | None:
 def _structured_analysis(
     reply_text: str,
     messages: list[dict[str, Any]],
+    collected_evidence: list[EvidenceReference] | None = None,
+    collected_actions: list[WorkspaceActionProposal] | None = None,
 ) -> tuple[str, StructuredAnalysis, list[EvidenceReference], list[WorkspaceActionProposal]]:
-    """Parse structured output while accepting legacy plain-text model replies."""
-    evidence_refs, tool_actions = _extract_tool_metadata(messages)
+    """Parse structured output while accepting legacy plain-text model replies.
+
+    Evidence is taken from the live collection when the caller ran the tool loop
+    (the transcript no longer carries it — see :func:`_model_projection`), and
+    falls back to parsing the history so a persisted legacy conversation still
+    resolves.
+    """
+    if collected_evidence is None and collected_actions is None:
+        evidence_refs, tool_actions = _extract_tool_metadata(messages)
+    else:
+        evidence_refs = list(collected_evidence or [])
+        tool_actions = list(collected_actions or [])
     evidence_ids = {item.evidence_id for item in evidence_refs}
     clean_text, payload = _analysis_payload_from_text(reply_text)
     fallback_narrative = (clean_text or reply_text or "No analysis was returned.").strip()
+    # A reply truncated mid-JSON leaves the marker block unparseable and the whole
+    # raw text lands here, which can exceed the schema's own limit. Clamp rather
+    # than raise: a long narrative is a degraded answer, not a failed run.
+    if len(fallback_narrative) > _MAX_NARRATIVE_CHARS:
+        fallback_narrative = (
+            fallback_narrative[:_MAX_NARRATIVE_CHARS - 3].rstrip() + "..."
+        )
     parsed_actions: list[WorkspaceActionProposal] = []
     if payload:
         for raw_action in payload.get("workspace_actions", []):
@@ -1102,8 +1386,17 @@ def chat(
     if workspace_context is not None and not isinstance(workspace_context, WorkspaceContext):
         workspace_context = WorkspaceContext.model_validate(workspace_context)
     messages.append({"role": "user", "content": user_message})
-    reply, history = _run_agent(messages, workspace_context=workspace_context)
-    clean_reply, analysis, evidence_refs, actions = _structured_analysis(reply, history)
+    evidence_sink: list[EvidenceReference] = []
+    action_sink: list[WorkspaceActionProposal] = []
+    reply, history = _run_agent(
+        messages,
+        workspace_context=workspace_context,
+        evidence_sink=evidence_sink,
+        action_sink=action_sink,
+    )
+    clean_reply, analysis, evidence_refs, actions = _structured_analysis(
+        reply, history, evidence_sink, action_sink
+    )
     result = ChatResult(
         reply=clean_reply,
         conversation_history=history,

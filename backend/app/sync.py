@@ -112,6 +112,12 @@ def sync_once() -> dict:
             # Refresh rolling summaries so new points are reflected immediately.
             compute_daily_summaries()
 
+            # Daily readout against the standing plan. Best-effort: it must never
+            # fail the sync that produced the data it reads.
+            from app.daily_check import run_after_sync
+
+            run_after_sync()
+
             return {
                 "status": "ok",
                 "rows_synced": rows_synced,

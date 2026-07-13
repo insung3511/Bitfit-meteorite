@@ -58,14 +58,20 @@ def test_dispatch_attaches_deterministic_evidence_reference(monkeypatch):
         "aggregation": "mean",
     }
 
-    first = llm_client._dispatch_tool("query_health_data", tool_input)
-    second = llm_client._dispatch_tool("query_health_data", tool_input)
+    # Evidence is collected server-side rather than echoed back to the model: the
+    # full reference (with every record id) would otherwise be resent on every
+    # subsequent tool round and blow the context window.
+    sink: list = []
+    first = llm_client._dispatch_tool("query_health_data", tool_input, sink)
+    second = llm_client._dispatch_tool("query_health_data", tool_input, sink)
 
     assert first["evidence_id"] == second["evidence_id"]
-    evidence = first["evidence_refs"][0]
-    assert evidence["metric"] == "steps"
-    assert evidence["record_ids"] == ["takeout-1", "takeout-2"]
-    assert evidence["source"] == "takeout"
+    assert "evidence_refs" not in first
+    evidence = sink[0]
+    assert evidence.evidence_id == first["evidence_id"]
+    assert evidence.metric == "steps"
+    assert evidence.record_ids == ["takeout-1", "takeout-2"]
+    assert evidence.source == "takeout"
 
 
 def test_raw_signal_tool_returns_bounded_provenance(monkeypatch):
@@ -94,6 +100,7 @@ def test_raw_signal_tool_returns_bounded_provenance(monkeypatch):
         ],
     )
 
+    sink: list = []
     result = llm_client._dispatch_tool(
         "query_raw_health_signals",
         {
@@ -102,11 +109,12 @@ def test_raw_signal_tool_returns_bounded_provenance(monkeypatch):
             "end_date": "2016-12-01",
             "limit": 10,
         },
+        sink,
     )
 
     assert result["records"][0]["value"] == 62.0
     assert result["record_ids"] == ["raw-1"]
-    assert result["evidence_refs"][0]["source"] == "google_fit_takeout"
+    assert sink[0].source == "google_fit_takeout"
 
 
 def test_structured_analysis_filters_untrusted_evidence_ids():
@@ -154,7 +162,7 @@ def test_chat_keeps_legacy_reply_and_history_fields(monkeypatch):
     monkeypatch.setattr(
         llm_client,
         "_run_agent",
-        lambda messages, workspace_context=None: ("No matching data.", messages),
+        lambda messages, workspace_context=None, **kwargs: ("No matching data.", messages),
     )
 
     result = llm_client.chat("What happened?")
@@ -220,3 +228,106 @@ def test_tool_schema_exposes_read_and_proposal_tools():
         schema for schema in TOOL_SCHEMAS if schema["name"] == "propose_workspace_action"
     )
     assert proposal_schema["input_schema"]["properties"]["action_type"]["enum"]
+
+
+def test_research_drops_ungrounded_claims():
+    """Claims citing evidence the server never minted must not survive."""
+    from app.research import _analysis_from_tool_history, _plan_from_tool_history
+
+    history = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "submit_analysis",
+                    "input": {
+                        "observations": [
+                            {"statement": "Real claim.", "evidence_ids": ["ev_real"]},
+                            {"statement": "Invented claim.", "evidence_ids": ["ev_fake"]},
+                            {"statement": "Unsourced claim.", "evidence_ids": []},
+                        ],
+                        "uncertainties": [
+                            {"statement": "Thin coverage.", "evidence_ids": ["ev_fake"]},
+                        ],
+                    },
+                },
+                {
+                    "type": "tool_use",
+                    "name": "propose_health_plan",
+                    "input": {
+                        "horizon": "weekly",
+                        "summary": "Plan.",
+                        "targets": [
+                            {
+                                "metric": "steps",
+                                "direction": "increase",
+                                "rationale": "Grounded.",
+                                "evidence_ids": ["ev_real", "ev_fake"],
+                            },
+                            {
+                                "metric": "hrv",
+                                "direction": "increase",
+                                "rationale": "Ungrounded.",
+                                "evidence_ids": ["ev_fake"],
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+    ]
+    valid = {"ev_real"}
+
+    analysis = _analysis_from_tool_history(history, valid)
+    assert [o["statement"] for o in analysis["observations"]] == ["Real claim."]
+    # Uncertainties are kept even unsourced — a caveat is not a data claim.
+    assert len(analysis["uncertainties"]) == 1
+    assert analysis["uncertainties"][0]["evidence_ids"] == []
+
+    plan = _plan_from_tool_history(history, valid)
+    assert [t.metric for t in plan.targets] == ["steps"]
+    assert plan.targets[0].evidence_ids == ["ev_real"]
+
+
+def test_model_projection_bounds_bulk_rows_but_keeps_the_count():
+    """Claude must never receive thousands of rows: they are resent every round."""
+    from app import llm_client
+
+    result = {
+        "metric": "heart_rate",
+        "count": 5_000,
+        "records": [{"value": float(i)} for i in range(5_000)],
+        "record_ids": [f"r{i}" for i in range(5_000)],
+    }
+    projected = llm_client._model_projection(result)
+
+    assert projected["count"] == 5_000
+    assert len(projected["records"]) <= llm_client._MODEL_SAMPLE_ROWS
+    assert len(projected["record_ids"]) == llm_client._MODEL_RECORD_IDS
+    assert projected["records_total"] == 5_000
+    assert projected["records_stats"]["min"] == 0.0
+    assert projected["records_stats"]["max"] == 4_999.0
+
+
+def test_daily_check_adherence_is_arithmetic_not_narrated():
+    """Adherence is a numeric comparison; the model only narrates it."""
+    from app.ai_schemas import PlanTarget
+    from app.daily_check import _adherence
+
+    targets = [
+        PlanTarget(metric="steps", direction="increase", target_value=10_000, rationale="x"),
+        PlanTarget(metric="resting_heart_rate", direction="decrease", target_value=63, rationale="x"),
+        PlanTarget(metric="spo2", direction="increase", target_value=97, rationale="x"),
+    ]
+    observed = {
+        "steps": {"value": 12_000.0},
+        "resting_heart_rate": {"value": 70.0},
+    }
+
+    rows = {row.metric: row for row in _adherence(targets, observed)}
+
+    assert rows["steps"].on_target is True
+    assert rows["resting_heart_rate"].on_target is False
+    assert rows["spo2"].on_target is None
+    assert "No reading" in rows["spo2"].note

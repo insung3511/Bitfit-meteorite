@@ -122,3 +122,74 @@ class WorkspaceVersion(SQLModel, table=True):
     document_json: str
     parent_id: Optional[str] = Field(default=None, index=True)
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)
+
+
+class ResearchJob(SQLModel, table=True):
+    """A long-running deep-analysis run.
+
+    Mirrors the ``raw_import_batch`` lifecycle: the row is the job's single
+    source of truth, so a worker thread reports progress by updating it and
+    cancellation works by flipping ``status`` and letting the worker notice
+    between tool rounds.
+    """
+
+    __tablename__ = "research_job"
+
+    id: str = Field(primary_key=True)
+    status: str = Field(index=True, description="running | complete | error | cancelled")
+    question: Optional[str] = Field(
+        default=None, description="None means an open-ended baseline analysis."
+    )
+    phase: Optional[str] = Field(default=None, description="Human-readable progress.")
+    rounds_done: int = Field(default=0)
+    report_id: Optional[str] = Field(default=None, index=True)
+    error: Optional[str] = Field(default=None)
+    started_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)
+    finished_at: Optional[dt.datetime] = Field(default=None)
+
+
+class ResearchReport(SQLModel, table=True):
+    """The persisted output of a completed :class:`ResearchJob`."""
+
+    __tablename__ = "research_report"
+
+    id: str = Field(primary_key=True)
+    job_id: str = Field(index=True)
+    narrative: str
+    analysis_json: str = Field(description="Serialized StructuredAnalysis.")
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)
+
+
+class HealthPlan(SQLModel, table=True):
+    """A weekly/monthly plan derived from a research report.
+
+    Plans are versioned, never mutated: superseding one writes a new row with
+    ``parent_id`` set and clears ``is_active`` on the old. The daily check
+    records which plan version it judged against, so history stays interpretable.
+    """
+
+    __tablename__ = "health_plan"
+
+    id: str = Field(primary_key=True)
+    report_id: str = Field(index=True)
+    horizon: str = Field(description="weekly | monthly")
+    plan_json: str = Field(description="Serialized HealthPlanSpec.")
+    is_active: bool = Field(default=True, index=True)
+    parent_id: Optional[str] = Field(default=None, index=True)
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)
+
+
+class DailyCheck(SQLModel, table=True):
+    """One day's cheap readout of the data against the standing plan."""
+
+    __tablename__ = "daily_check"
+    __table_args__ = (
+        UniqueConstraint("date", name="uq_daily_check_date"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    date: dt.date = Field(index=True)
+    plan_id: Optional[str] = Field(default=None, index=True)
+    summary: str
+    result_json: str = Field(description="Serialized DailyCheckResult.")
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)

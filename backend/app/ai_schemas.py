@@ -191,6 +191,74 @@ class StructuredAnalysis(_ProtocolModel):
     workspace_actions: list[WorkspaceActionProposal] = Field(default_factory=list, max_length=32)
 
 
+class PlanTarget(_ProtocolModel):
+    """A measurable target the plan is steering one metric toward.
+
+    ``current_value`` and ``target_value`` are the numbers the plan is judged
+    against, so the daily check can compute adherence without re-reasoning.
+    ``evidence_ids`` must reference server-minted evidence; a target with no
+    surviving evidence is not persisted.
+    """
+
+    metric: str = Field(min_length=1, max_length=128)
+    direction: Literal["increase", "decrease", "maintain"]
+    current_value: float | None = None
+    target_value: float | None = None
+    unit: str | None = Field(default=None, max_length=32)
+    rationale: str = Field(min_length=1, max_length=4_000)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=64)
+
+
+class PlanExperiment(_ProtocolModel):
+    """A time-boxed behavioural change, stated so its effect can be measured."""
+
+    statement: str = Field(min_length=1, max_length=4_000)
+    duration_days: int = Field(ge=1, le=365)
+    measured_by: list[str] = Field(default_factory=list, max_length=16)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=64)
+
+
+class HealthPlanSpec(_ProtocolModel):
+    """A weekly or monthly plan derived from a deep-research run.
+
+    This is wellness guidance grounded in the user's own measurements, not a
+    medical prescription — the same policy the system prompt enforces.
+    """
+
+    horizon: Literal["weekly", "monthly"]
+    summary: str = Field(min_length=1, max_length=8_000)
+    targets: list[PlanTarget] = Field(default_factory=list, max_length=16)
+    experiments: list[PlanExperiment] = Field(default_factory=list, max_length=16)
+    confidence: Literal["low", "medium", "high"] = "low"
+
+
+class ResearchReportSpec(_ProtocolModel):
+    """The full output of a deep-research run: analysis plus the derived plan."""
+
+    analysis: StructuredAnalysis
+    plan: HealthPlanSpec | None = None
+
+
+class PlanAdherence(_ProtocolModel):
+    """How one plan target fared on one day."""
+
+    metric: str = Field(min_length=1, max_length=128)
+    target_value: float | None = None
+    observed_value: float | None = None
+    on_target: bool | None = None
+    note: str = Field(default="", max_length=2_000)
+
+
+class DailyCheckResult(_ProtocolModel):
+    """The cheap daily readout: yesterday measured against the standing plan."""
+
+    date: dt.date
+    plan_id: str | None = Field(default=None, max_length=128)
+    summary: str = Field(min_length=1, max_length=8_000)
+    adherence: list[PlanAdherence] = Field(default_factory=list, max_length=16)
+    deviations: list[AnalysisObservation] = Field(default_factory=list, max_length=32)
+
+
 class ChatResult(_ProtocolModel):
     """Wire response returned by :func:`app.llm_client.chat`."""
 
@@ -207,8 +275,14 @@ __all__ = [
     "AnalysisUncertainty",
     "ChartSpec",
     "ChatResult",
+    "DailyCheckResult",
     "EvidencePoint",
     "EvidenceReference",
+    "HealthPlanSpec",
+    "PlanAdherence",
+    "PlanExperiment",
+    "PlanTarget",
+    "ResearchReportSpec",
     "StructuredAnalysis",
     "WorkspaceActionProposal",
     "WorkspaceActionType",
