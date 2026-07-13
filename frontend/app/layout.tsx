@@ -19,10 +19,10 @@ export default function RootLayout({
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full">
         <AmbientBackground />
-        <main className="relative z-10 min-h-screen w-full">
-          <SessionGate>{children}</SessionGate>
-        </main>
-        <FloatingUtilityDock />
+        <SessionGate>
+          <main className="relative z-10 min-h-screen w-full">{children}</main>
+          <FloatingUtilityDock />
+        </SessionGate>
         <ToastContainer />
       </body>
     </html>

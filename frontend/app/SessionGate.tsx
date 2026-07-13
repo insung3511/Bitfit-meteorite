@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-type SessionStatus = "authenticated" | "unauthenticated" | "unavailable";
+type SessionStatus = "authenticated" | "unauthenticated";
 
 type SessionCheck = {
   pathname: string;
@@ -56,9 +56,10 @@ export default function SessionGate({
       })
       .catch(() => {
         if (cancelled) return;
-        // A failed check is not proof that the visitor is unauthenticated.
-        // Render the page so its existing unavailable state can be shown.
-        setSessionCheck({ pathname, status: "unavailable" });
+        // Fail closed: an unavailable or invalid session check must never expose
+        // protected health UI while authentication cannot be confirmed.
+        setSessionCheck({ pathname, status: "unauthenticated" });
+        router.replace("/login");
       });
 
     return () => {
