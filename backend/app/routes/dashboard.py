@@ -31,8 +31,9 @@ from sqlmodel import Session, select
 
 from app.db import engine
 from app.llm_client import get_anomalies, sleep_coaching_summary
-from app.models import DailyMetric, DailySummary
+from app.models import DailyMetric, DailySummary, OAuthToken
 from app.raw_signal_import import query_raw_signals
+from app.auth import PROVIDER as AUTH_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -244,4 +245,27 @@ def sleep_coaching() -> dict[str, Optional[str]]:
             "summary": None,
             "error": "Sleep coaching is unavailable right now. Check that "
             "ANTHROPIC_API_KEY is configured correctly and try again.",
+        }
+
+
+@router.get("/connection")
+def connection_status() -> dict[str, Any]:
+    """Return whether a Google Health OAuth token is stored and fresh."""
+    with Session(engine) as session:
+        row = session.exec(
+            select(OAuthToken).where(OAuthToken.provider == AUTH_PROVIDER)
+        ).first()
+        if row is None:
+            return {"connected": False, "provider": AUTH_PROVIDER}
+        now = dt.datetime.utcnow()
+        expires_at = row.access_token_expires_at
+        is_fresh = (
+            expires_at is not None
+            and expires_at > now
+        )
+        return {
+            "connected": True,
+            "provider": AUTH_PROVIDER,
+            "token_fresh": is_fresh,
+            "expires_at": expires_at.isoformat() if expires_at else None,
         }

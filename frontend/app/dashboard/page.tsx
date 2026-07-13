@@ -64,6 +64,19 @@ type AgentAction = {
   payload?: Record<string, unknown>;
 };
 
+type ConnectionStatus = {
+  connected: boolean;
+  provider: string;
+  token_fresh?: boolean;
+  expires_at?: string | null;
+};
+
+type SyncResult = {
+  status: string;
+  records_synced?: number;
+  error?: string;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
@@ -125,6 +138,11 @@ export default function DashboardPage() {
   const [rawData, setRawData] = useState<FetchState<RawResponse>>({
     status: "loading",
   });
+  const [connection, setConnection] = useState<FetchState<ConnectionStatus>>({
+    status: "loading",
+  });
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +164,14 @@ export default function DashboardPage() {
       .catch((error) => {
         if (!cancelled)
           setAnomalies({ status: "error", message: String(error) });
+      });
+    getJSON<ConnectionStatus>("/dashboard/connection")
+      .then((res) => {
+        if (!cancelled) setConnection({ status: "ready", data: res });
+      })
+      .catch((error) => {
+        if (!cancelled)
+          setConnection({ status: "error", message: String(error) });
       });
     return () => {
       cancelled = true;
@@ -377,6 +403,37 @@ export default function DashboardPage() {
     commitPanels(createDefaultWorkspace().active.panels, "Restored overview");
   }
 
+  async function connectGoogle() {
+    window.location.href = `${API_BASE_URL}/auth/google/login`;
+  }
+
+  async function runSync() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/sync/run`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = (await res.json()) as SyncResult;
+      setSyncResult(data);
+      // Refresh metrics after sync
+      const metricsRes = await getJSON<MetricsResponse>("/dashboard/metrics");
+      setAvailableMetrics(new Set(metricsRes.metrics));
+      setMetricsState({ status: "ready", data: null });
+      // Refresh connection status
+      const connRes = await getJSON<ConnectionStatus>("/dashboard/connection");
+      setConnection({ status: "ready", data: connRes });
+    } catch (error) {
+      setSyncResult({
+        status: "error",
+        error: String(error),
+      });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   const boardStatus =
     metricsState.status === "loading"
       ? "Loading"
@@ -385,6 +442,11 @@ export default function DashboardPage() {
         : availableMetrics.size
           ? "Ready"
           : "Awaiting data";
+
+  const isConnected =
+    connection.status === "ready" && connection.data.connected;
+  const isTokenFresh =
+    connection.status === "ready" && connection.data.token_fresh;
 
   return (
     <div className="board-shell min-h-screen px-4 pb-32 pt-8 sm:px-8 lg:px-12">
@@ -440,6 +502,97 @@ export default function DashboardPage() {
               </strong>
               <span className="eyebrow pb-1">signals loaded</span>
             </div>
+          </motion.div>
+
+          {/* Google OAuth + Sync card */}
+          <motion.div
+            variants={sectionVariants}
+            className="glass-card min-w-[240px] p-4"
+          >
+            <div className="flex items-center justify-between">
+              <span className="eyebrow">Google Health</span>
+              {connection.status === "loading" ? (
+                <span className="status-dot status-dot-warn" />
+              ) : connection.status === "error" ? (
+                <span className="status-dot status-dot-bad" />
+              ) : isConnected ? (
+                <span className="status-orbital status-dot status-dot-good" />
+              ) : (
+                <span className="status-dot status-dot-bad" />
+              )}
+            </div>
+            <div className="mt-3 space-y-2">
+              {connection.status === "loading" && (
+                <p className="text-xs text-[var(--ink-soft)]">
+                  Checking connection…
+                </p>
+              )}
+              {connection.status === "error" && (
+                <p className="text-xs text-[var(--signal-danger)]">
+                  Could not check status
+                </p>
+              )}
+              {connection.status === "ready" && (
+                <>
+                  <p className="text-xs text-[var(--ink-soft)]">
+                    {isConnected
+                      ? isTokenFresh
+                        ? "Connected · token fresh"
+                        : "Connected · token expired"
+                      : "Not connected"}
+                  </p>
+                  <div className="flex gap-2">
+                    {!isConnected && (
+                      <motion.button
+                        type="button"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={connectGoogle}
+                        className="glass-chip glass-chip-active text-xs"
+                      >
+                        Connect Google ↗
+                      </motion.button>
+                    )}
+                    {isConnected && (
+                      <motion.button
+                        type="button"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={runSync}
+                        disabled={syncing}
+                        className="glass-chip glass-chip-active text-xs disabled:opacity-40"
+                      >
+                        {syncing ? "Syncing…" : "Sync now ↻"}
+                      </motion.button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Sync result toast */}
+            <AnimatePresence>
+              {syncResult && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mt-2 overflow-hidden"
+                >
+                  <div
+                    className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider ${
+                      syncResult.status === "error"
+                        ? "bg-[var(--signal-danger)]/10 text-[var(--signal-danger)]"
+                        : "bg-[var(--signal-good)]/10 text-[var(--signal-good)]"
+                    }`}
+                  >
+                    {syncResult.status === "error"
+                      ? syncResult.error || "Sync failed"
+                      : `${syncResult.records_synced ?? 0} records synced`}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </motion.div>
 
