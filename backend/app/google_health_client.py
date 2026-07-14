@@ -84,9 +84,11 @@ class _DataTypeSpec:
 _DATA_TYPES: list[_DataTypeSpec] = [
     _DataTypeSpec("steps", "interval.civil_start_time", True, "steps", "count", "sum", "steps"),
     _DataTypeSpec(
+        # Unlike the other sample types this one has no `sampleTime` — its
+        # payload carries a flat civil `date` (confirmed live against the API).
         "daily-resting-heart-rate",
-        "sample_time.physical_time",
-        False,
+        "date",
+        True,
         "resting_heart_rate",
         "bpm",
         "mean",
@@ -166,6 +168,10 @@ def _build_filter(spec: _DataTypeSpec, since: dt.datetime) -> str:
     Per the docs, interval types filter on ``<type>.interval.start_time`` with an
     RFC3339 timestamp; sample/daily types filter on
     ``<type>.sample_time.civil_time`` with a ``YYYY-MM-DD`` date.
+
+    The ``<type>`` prefix must be the data type's snake_case name (confirmed
+    live against the API — camelCase and kebab-case are both rejected with
+    ``INVALID_DATA_POINT_FILTER_DATA_TYPE_RESTRICTION``).
     """
     snake = spec.google_name.replace("-", "_")
     if spec.civil:
@@ -321,6 +327,11 @@ def _record_metadata(data_point: dict) -> dict[str, str]:
 
 def _extract_date(data_point: dict) -> Optional[dt.date]:
     """Best-effort calendar date of a data point (see TODO)."""
+    date_field = data_point.get("date")
+    if isinstance(date_field, dict):
+        year, month, day = date_field.get("year"), date_field.get("month"), date_field.get("day")
+        if year and month and day:
+            return dt.date(year, month, day)
     for key in ("startTime", "endTime", "sampleTime", "time"):
         parsed = _parse_ts(data_point.get(key))
         if parsed is not None:
@@ -333,23 +344,43 @@ def _extract_date(data_point: dict) -> Optional[dt.date]:
                 return parsed
     sample_time = data_point.get("sampleTime")
     if isinstance(sample_time, dict):
-        civil = sample_time.get("civilTime") or sample_time.get("civilDate")
-        parsed = _parse_ts(civil)
+        # The live payload nests the actual timestamp under sampleTime.physicalTime
+        # (a string) or sampleTime.civilTime.date (a {year,month,day} dict) — the
+        # sampleTime dict itself is never a parseable timestamp.
+        parsed = _parse_ts(sample_time.get("physicalTime"))
         if parsed is not None:
             return parsed
+        civil_time = sample_time.get("civilTime")
+        if isinstance(civil_time, dict):
+            civil_date = civil_time.get("date")
+            if isinstance(civil_date, dict):
+                year, month, day = (
+                    civil_date.get("year"),
+                    civil_date.get("month"),
+                    civil_date.get("day"),
+                )
+                if year and month and day:
+                    return dt.date(year, month, day)
     return None
 
 
 def _extract_value(data_point: dict) -> Optional[float]:
     """Best-effort numeric value of a scalar data point (see TODO)."""
+    # weightGrams is reported in grams; every other unit below is used as-is.
+    weight_grams = _as_float(data_point.get("weightGrams"))
+    if weight_grams is not None:
+        return weight_grams / 1000.0
     for key in (
         "value",
         "count",
         "bpm",
+        "beatsPerMinute",
         "weight",
         "percentage",
         "milliseconds",
+        "rootMeanSquareOfSuccessiveDifferencesMilliseconds",
         "minutes",
+        "activeZoneMinutes",
         "fpVal",
         "intVal",
     ):

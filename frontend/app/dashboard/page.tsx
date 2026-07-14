@@ -73,8 +73,9 @@ type ConnectionStatus = {
 
 type SyncResult = {
   status: string;
-  records_synced?: number;
-  error?: string;
+  rows_synced?: number;
+  rows_skipped?: number;
+  detail?: string;
 };
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -427,7 +428,7 @@ export default function DashboardPage() {
     } catch (error) {
       setSyncResult({
         status: "error",
-        error: String(error),
+        detail: String(error),
       });
     } finally {
       setSyncing(false);
@@ -551,14 +552,16 @@ export default function DashboardPage() {
                 >
                   <div
                     className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${
-                      syncResult.status === "error"
-                        ? "border border-[var(--signal-danger)] text-[var(--signal-danger)]"
-                        : "border border-[var(--signal-good)] text-[var(--signal-good)]"
+                      syncResult.status === "ok"
+                        ? "border border-[var(--signal-good)] text-[var(--signal-good)]"
+                        : "border border-[var(--signal-danger)] text-[var(--signal-danger)]"
                     }`}
                   >
                     {syncResult.status === "error"
-                      ? syncResult.error || "Sync failed"
-                      : `${syncResult.records_synced ?? 0} records synced`}
+                      ? syncResult.detail || "Sync failed"
+                      : syncResult.status === "busy"
+                        ? syncResult.detail || "Sync already running"
+                        : `${syncResult.rows_synced ?? 0} records synced`}
                   </div>
                 </motion.div>
               )}

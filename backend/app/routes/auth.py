@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
 
 from fastapi import APIRouter, Cookie, HTTPException, Query
 from fastapi.responses import RedirectResponse
@@ -29,6 +30,7 @@ from app.session import SESSION_COOKIE_NAME
 router = APIRouter(prefix="/auth/google", tags=["auth"])
 
 _STATE_TTL = dt.timedelta(minutes=10)
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 
 def _state_hash(state: str) -> str:
@@ -63,7 +65,7 @@ def callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
-) -> dict[str, str]:
+) -> RedirectResponse:
     """Handle Google's redirect: verify state, exchange code, store tokens."""
     if error is not None:
         raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
@@ -91,4 +93,4 @@ def callback(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"status": "connected", "provider": auth.PROVIDER}
+    return RedirectResponse(f"{FRONTEND_URL}/dashboard?connected={auth.PROVIDER}")

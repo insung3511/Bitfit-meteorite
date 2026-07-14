@@ -60,16 +60,6 @@ export default function LoginPage() {
         }}
       />
 
-      <style>{`
-        @keyframes terminal-blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
-        }
-        .terminal-cursor {
-          animation: terminal-blink 1s step-end infinite;
-        }
-      `}</style>
-
       <motion.form
         onSubmit={handleSubmit}
         initial={{ opacity: 0, y: 30, scale: 0.95 }}
@@ -109,12 +99,8 @@ export default function LoginPage() {
             placeholder="Password"
             autoFocus
             disabled={loading}
-            className="cmd-input w-full pr-8"
-          />
-          {/* Blinking terminal cursor */}
-          <div
-            className="terminal-cursor absolute right-3 top-1/2 h-4 w-[2px] -translate-y-1/2"
-            style={{ background: "var(--accent-cyan, #00d4ff)" }}
+            className="cmd-input w-full"
+            suppressHydrationWarning
           />
         </div>
 
