@@ -57,8 +57,8 @@ function ChartTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="rounded-xl border border-[var(--line-strong)] bg-[var(--paper)] px-3 py-2 text-xs shadow-xl backdrop-blur-md">
-      <div className="eyebrow">
+    <div className="module-card px-3 py-2 text-xs">
+      <div className="cmd-label mb-1">
         {typeof label === "string" ? shortDate(label) : label}
       </div>
       {payload.map((entry, index) => {
@@ -68,9 +68,18 @@ function ChartTooltip({
         return (
           <div
             key={`${entry.name ?? "value"}-${index}`}
-            className="text-[var(--ink-soft)]"
+            className="text-[var(--text-secondary)]"
           >
-            {entry.name ?? "Value"}: <span className="font-mono">{value}</span>
+            {entry.name ?? "Value"}:{" "}
+            <span
+              className="text-[var(--text-primary)]"
+              style={{
+                fontFamily:
+                  "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
+              }}
+            >
+              {value}
+            </span>
           </div>
         );
       })}
@@ -206,7 +215,12 @@ export default function MetricChart({
       </ResponsiveContainer>
     </div>
   ) : (
-    <div className="flex h-44 items-center justify-center border border-dashed border-[var(--line)] text-sm text-[var(--ink-soft)]">
+    <div
+      className="flex h-44 items-center justify-center border border-dashed border-[var(--border-subtle)] text-sm text-[var(--text-secondary)]"
+      style={{
+        fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
+      }}
+    >
       No data yet
     </div>
   );
@@ -214,8 +228,15 @@ export default function MetricChart({
   if (embedded) return chart;
 
   return (
-    <div className="rounded-xl border border-black/10 bg-[var(--viz-surface)] p-4 dark:border-white/15">
-      <h3 className="mb-3 text-sm font-medium">{label}</h3>
+    <div className="module-card p-4">
+      <h3
+        className="mb-3 text-sm font-medium"
+        style={{
+          fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
+        }}
+      >
+        {label}
+      </h3>
       {chart}
     </div>
   );
