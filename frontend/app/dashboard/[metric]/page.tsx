@@ -83,6 +83,12 @@ export default function MetricDetailPage() {
   useEffect(() => {
     if (!metric) return;
     let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setLoading(true);
+        setError(null);
+      }
+    });
     Promise.all([
       getJSON<SummaryResponse>(
         `/dashboard/summary?metric=${encodeURIComponent(metric)}&days=${days}`,

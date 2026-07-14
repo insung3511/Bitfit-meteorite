@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import WorkspacePanel from "./WorkspacePanel";
 import { type SummaryPoint } from "./MetricChart";
 import AnimatedCounter from "../components/AnimatedCounter";
+import { validQueuedWorkspaceActions } from "../workspaceActions";
 import {
   commitWorkspaceVersion,
   createDefaultWorkspace,
@@ -57,13 +58,6 @@ type FetchState<T> =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; data: T };
-type AgentAction = {
-  action_id: string;
-  action_type: string;
-  panel_id?: string | null;
-  payload?: Record<string, unknown>;
-};
-
 type ConnectionStatus = {
   connected: boolean;
   provider: string;
@@ -204,79 +198,52 @@ export default function DashboardPage() {
   }, [workspace, workspaceReady]);
 
   useEffect(() => {
-    if (!workspaceReady || availableMetrics.size === 0) return;
-    const timer = window.setTimeout(
-      () =>
-        setWorkspace((current) => {
-          const additions = METRIC_CATALOG.filter(
-            (entry) =>
-              availableMetrics.has(entry.metric) &&
-              !current.active.panels.some(
-                (panel) => panel.metric === entry.metric,
-              ),
-          ).map((entry, index) =>
-            createPanel(entry.metric, current.active.panels.length + index),
-          );
-          return additions.length > 0
-            ? commitWorkspaceVersion(
-                current,
-                [...current.active.panels, ...additions],
-                "Added available Fitbit signals",
-              )
-            : current;
-        }),
-      0,
-    );
-    return () => window.clearTimeout(timer);
-  }, [availableMetrics, workspaceReady]);
-
-  useEffect(() => {
     const onToggle = () => setEditingLayout((current) => !current);
     window.addEventListener("bitfit:toggle-layout", onToggle);
     return () => window.removeEventListener("bitfit:toggle-layout", onToggle);
   }, []);
 
   useEffect(() => {
-    if (!workspaceReady) return;
+    if (!workspaceReady || metricsState.status !== "ready") return;
     const timer = window.setTimeout(() => {
       try {
         const saved = window.localStorage.getItem(AGENT_PROPOSAL_KEY);
         if (!saved) return;
-        const action = JSON.parse(saved) as AgentAction;
-        if (
-          action.action_type === "add_chart" &&
-          action.payload?.chart &&
-          typeof action.payload.chart === "object"
-        ) {
-          const metric = (action.payload.chart as Record<string, unknown>)
-            .metric;
+        const parsed: unknown = JSON.parse(saved);
+        const actions = validQueuedWorkspaceActions(parsed);
+        for (const action of actions) {
           if (
-            typeof metric === "string" &&
-            availableMetrics.has(metric)
+            action.action_type === "add_chart" &&
+            action.payload?.chart &&
+            typeof action.payload.chart === "object"
           ) {
-            setWorkspace((current) =>
-              current.active.panels.some((panel) => panel.metric === metric)
-                ? current
-                : commitWorkspaceVersion(
-                    current,
-                    [
-                      ...current.active.panels,
-                      createPanel(metric, current.active.panels.length),
-                    ],
-                    "Added from assistant",
-                  ),
-            );
+            const metric = (action.payload.chart as Record<string, unknown>)
+              .metric;
+            if (typeof metric === "string" && availableMetrics.has(metric)) {
+              setWorkspace((current) =>
+                current.active.panels.some((panel) => panel.metric === metric)
+                  ? current
+                  : commitWorkspaceVersion(
+                      current,
+                      [
+                        ...current.active.panels,
+                        createPanel(metric, current.active.panels.length),
+                      ],
+                      "Added from assistant",
+                    ),
+              );
+            }
           }
+          if (action.action_type === "focus_panel" && action.panel_id)
+            setSelectedPanelId(action.panel_id);
         }
-        if (action.action_type === "focus_panel" && action.panel_id)
-          setSelectedPanelId(action.panel_id);
         window.localStorage.removeItem(AGENT_PROPOSAL_KEY);
       } catch {
         window.localStorage.removeItem(AGENT_PROPOSAL_KEY);
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [availableMetrics, workspaceReady]);
+  }, [availableMetrics, metricsState.status, workspaceReady]);
 
   const chartablePanels = useMemo(
     () =>
@@ -318,8 +285,15 @@ export default function DashboardPage() {
   }, [chartablePanels, metricsState.status]);
 
   useEffect(() => {
-    if (!selectedPanel || !availableMetrics.has(selectedPanel.metric)) return;
     let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setRawData({ status: "loading" });
+    });
+    if (!selectedPanel || !availableMetrics.has(selectedPanel.metric)) {
+      return () => {
+        cancelled = true;
+      };
+    }
     getJSON<RawResponse>(
       `/dashboard/raw?metric=${encodeURIComponent(selectedPanel.metric)}&limit=24`,
     )
@@ -417,6 +391,9 @@ export default function DashboardPage() {
         credentials: "include",
       });
       const data = (await res.json()) as SyncResult;
+      if (!res.ok) {
+        throw new Error(data.detail || `Sync returned ${res.status}`);
+      }
       setSyncResult(data);
       // Refresh metrics after sync
       const metricsRes = await getJSON<MetricsResponse>("/dashboard/metrics");

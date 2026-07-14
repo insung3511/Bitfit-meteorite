@@ -54,7 +54,19 @@ class SyncLease(SQLModel, table=True):
     __tablename__ = "sync_lease"
 
     id: int = Field(default=1, primary_key=True)
+    owner_id: str
     acquired_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+
+
+class LoginThrottle(SQLModel, table=True):
+    """Persistent failed-login state keyed by a hashed client address."""
+
+    __tablename__ = "login_throttle"
+
+    client_id: str = Field(primary_key=True)
+    failed_count: int = Field(default=0)
+    window_started_at: dt.datetime
+    blocked_until: Optional[dt.datetime] = Field(default=None)
 
 
 class DailyMetric(SQLModel, table=True):

@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import TypingIndicator from "../components/TypingIndicator";
+import {
+  isQueuedWorkspaceAction,
+  validQueuedWorkspaceActions,
+  type QueuedWorkspaceAction,
+} from "../workspaceActions";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -117,18 +122,19 @@ export default function ChatPage() {
 
       const data = (await res.json()) as AgentResult;
       setHistory(data.conversation_history as ConversationHistory);
-      setMessages((prev) => {
-        const messageIndex = prev.length;
-        setAnalyses((current) => [
-          ...current,
-          {
-            messageIndex,
-            evidence: data.evidence_refs ?? [],
-            actions: data.workspace_actions ?? [],
-          },
-        ]);
-        return [...prev, { role: "assistant", text: data.reply }];
-      });
+      const messageIndex = messages.length + 1;
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", text: data.reply },
+      ]);
+      setAnalyses((current) => [
+        ...current,
+        {
+          messageIndex,
+          evidence: data.evidence_refs ?? [],
+          actions: data.workspace_actions ?? [],
+        },
+      ]);
     } catch {
       setError(
         "Could not reach the assistant. Is the backend running at " +
@@ -164,9 +170,20 @@ export default function ChatPage() {
   }
 
   function approveAction(action: WorkspaceActionProposal) {
+    if (!isQueuedWorkspaceAction(action)) return;
+    let pending: QueuedWorkspaceAction[] = [];
+    try {
+      const saved = window.localStorage.getItem(AGENT_PROPOSAL_KEY);
+      if (saved) {
+        const parsed: unknown = JSON.parse(saved);
+        pending = validQueuedWorkspaceActions(parsed);
+      }
+    } catch {
+      pending = [];
+    }
     window.localStorage.setItem(
       AGENT_PROPOSAL_KEY,
-      JSON.stringify(action),
+      JSON.stringify([...pending, action]),
     );
     setAnalyses((current) =>
       current.map((analysis) => ({
@@ -230,6 +247,10 @@ export default function ChatPage() {
         {/* Chat area */}
         <div
           ref={scrollRef}
+          role="log"
+          aria-label="Conversation"
+          aria-live="polite"
+          aria-relevant="additions text"
           className="module-card flex-1 space-y-4 overflow-y-auto p-4 sm:p-6"
         >
           <AnimatePresence>

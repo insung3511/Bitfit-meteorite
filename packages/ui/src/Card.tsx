@@ -25,6 +25,18 @@ export function Card({
   return (
     <div
       onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
       className={`rounded-xl border bg-[var(--viz-surface)] p-4 transition ${
         selected
           ? "border-black/50 shadow-sm dark:border-white/60"

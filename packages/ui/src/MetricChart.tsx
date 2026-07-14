@@ -1,3 +1,4 @@
+import { useId } from "react";
 import {
   Area,
   Bar,
@@ -79,8 +80,11 @@ export function MetricChart({
   showBaseline = false,
   embedded = false,
 }: MetricChartProps) {
-  const gradientId = `grad-${label.replace(/[^a-z0-9]/gi, "")}`;
-  const hasData = points.some((p) => p.mean_7d != null || p.mean_30d != null);
+  const instanceId = useId().replace(/[^a-z0-9]/gi, "");
+  const gradientId = `grad-${label.replace(/[^a-z0-9]/gi, "")}-${instanceId}`;
+  const hasData = points.some(
+    (point) => point.mean_7d != null || (showBaseline && point.mean_30d != null),
+  );
 
   const chart = hasData ? (
     <div className="h-44 w-full">

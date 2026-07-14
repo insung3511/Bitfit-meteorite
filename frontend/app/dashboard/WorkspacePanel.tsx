@@ -88,7 +88,6 @@ export default function WorkspacePanel({
       className={`widget-module relative overflow-hidden p-4 widget-size-${size} ${
         size === "large" ? "widget-large" : ""
       } ${selected ? "widget-module-selected" : ""}`}
-      onClick={onSelect}
       onMouseMove={handleMouseMove}
       style={{ "--metric-color": panel.color } as React.CSSProperties}
     >
@@ -118,15 +117,19 @@ export default function WorkspacePanel({
             <div className="cmd-label">
               {panel.rangeDays} day signal · Fitbit
             </div>
-            <h3
-              className="mt-1 truncate text-base font-semibold tracking-tight"
+            <button
+              type="button"
+              onClick={onSelect}
+              aria-pressed={selected}
+              aria-label={`Select ${panel.title} panel`}
+              className="mt-1 block max-w-full truncate text-left text-base font-semibold tracking-tight"
               style={{
                 fontFamily:
                   "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
               }}
             >
               {panel.title}
-            </h3>
+            </button>
             <p
               className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-secondary)]"
               style={{

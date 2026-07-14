@@ -2,15 +2,18 @@
 """
 Caveman Memory Compression Orchestrator
 
-Usage:
-    python scripts/compress.py <filepath>
+Internal compression helpers. Use the package CLI instead:
+    python -m scripts <filepath>
 """
 
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+from hashlib import sha256
 from pathlib import Path
 from typing import List
 
@@ -90,6 +93,67 @@ def backup_dir_for(filepath: Path) -> Path:
     return base / filepath.parent.name
 
 
+def backup_path_for(filepath: Path) -> Path:
+    """Return a collision-resistant backup path for the canonical source path."""
+    canonical = str(filepath.resolve(strict=False)).encode("utf-8")
+    identity = sha256(canonical).hexdigest()[:12]
+    return backup_dir_for(filepath) / f"{filepath.name}.{identity}.original"
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes on platforms that support directory fsync."""
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Some otherwise POSIX-like filesystems do not implement directory fsync.
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _prepare_backup_directory(path: Path) -> None:
+    """Create only skill-owned backup directories with private permissions."""
+    app_dir = path.parent.parent
+    for directory in (app_dir, path.parent, path):
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        try:
+            directory.chmod(0o700)
+        except OSError:
+            if os.name != "nt":
+                raise
+
+
+def _atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
+    """Durably write bytes, preserve mode, then atomically replace ``path``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            try:
+                os.fchmod(handle.fileno(), mode)
+            except AttributeError:  # pragma: no cover - unavailable on some Windows builds
+                pass
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def is_sensitive_path(filepath: Path) -> bool:
     """Heuristic denylist for files that must never be shipped to a third-party API."""
     name = filepath.name
@@ -110,8 +174,12 @@ def strip_llm_wrapper(text: str) -> str:
         return m.group(2)
     return text
 
-from .detect import should_compress
-from .validate import validate
+try:  # Package entry point.
+    from .detect import should_compress
+    from .validate import validate
+except ImportError:  # Direct ``python scripts/compress.py`` invocation.
+    from detect import should_compress
+    from validate import validate
 
 MAX_RETRIES = 2
 
@@ -220,8 +288,15 @@ Return ONLY the fixed compressed file. No explanation.
 
 
 def compress_file(filepath: Path) -> bool:
-    # Resolve and validate path
-    filepath = filepath.resolve()
+    # Check both the lexical path and resolved target. Resolving first lets a
+    # sensitive symlink name disappear before the denylist runs.
+    supplied_path = filepath.expanduser().absolute()
+    if is_sensitive_path(supplied_path):
+        raise ValueError(
+            f"Refusing to compress {supplied_path}: filename looks sensitive. "
+            "Compression sends file contents to the Anthropic API."
+        )
+    filepath = supplied_path.resolve()
     MAX_FILE_SIZE = 500_000  # 500KB
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -246,13 +321,15 @@ def compress_file(filepath: Path) -> bool:
         print("Skipping (not natural language)")
         return False
 
-    original_text = filepath.read_text(errors="ignore")
-    # Store backup outside the source directory so skill auto-loaders don't
-    # re-ingest the `.original.md` copy as a live file. Mirror the source's
-    # parent-dir name + stem under a platform-aware base to reduce collisions.
-    backup_dir = backup_dir_for(filepath)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / (filepath.stem + ".original.md")
+    source_mode = stat.S_IMODE(filepath.stat().st_mode)
+    original_bytes = filepath.read_bytes()
+    try:
+        original_text = original_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"File is not valid UTF-8: {filepath}") from exc
+    # Store a byte-identical backup outside the source directory.
+    backup_path = backup_path_for(filepath)
+    _prepare_backup_directory(backup_path.parent)
 
     if not original_text.strip():
         print("❌ Refusing to compress: file is empty or whitespace-only.")
@@ -300,9 +377,22 @@ def compress_file(filepath: Path) -> bool:
     # touching the input file. If the filesystem dropped bytes (encoding,
     # antivirus, disk full), unlink the bad backup and abort instead of
     # leaving the user with a corrupt backup + compressed primary.
-    backup_path.write_text(original_text)
-    backup_readback = backup_path.read_text(errors="ignore")
-    if backup_readback != original_text:
+    try:
+        backup_fd = os.open(
+            backup_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(backup_fd, "wb") as handle:
+            handle.write(original_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync_directory(backup_path.parent)
+    except FileExistsError:
+        print(f"⚠️ Backup file already exists: {backup_path}")
+        return False
+    backup_readback = backup_path.read_bytes()
+    if backup_readback != original_bytes:
         print(f"❌ Backup write verification failed: {backup_path}")
         print("   In-memory original differs from on-disk backup. Aborting before touching the input file.")
         try:
@@ -310,33 +400,48 @@ def compress_file(filepath: Path) -> bool:
         except OSError:
             pass
         return False
-    filepath.write_text(compressed)
+    def restore_original() -> None:
+        _atomic_write(filepath, original_bytes, source_mode)
+        backup_path.unlink(missing_ok=True)
+        _fsync_directory(backup_path.parent)
 
-    # Step 2: Validate + Retry
-    for attempt in range(MAX_RETRIES):
-        print(f"\nValidation attempt {attempt + 1}")
+    # Once replacement begins, every exceptional validation/retry path restores
+    # the byte-identical source before propagating the error.
+    try:
+        _atomic_write(filepath, compressed.encode("utf-8"), source_mode)
 
-        result = validate(backup_path, filepath)
+        # Step 2: Validate + Retry
+        for attempt in range(MAX_RETRIES):
+            print(f"\nValidation attempt {attempt + 1}")
 
-        if result.is_valid:
-            print("Validation passed")
-            break
+            result = validate(backup_path, filepath)
 
-        print("❌ Validation failed:")
-        for err in result.errors:
-            print(f"   - {err}")
+            if result.is_valid:
+                print("Validation passed")
+                break
 
-        if attempt == MAX_RETRIES - 1:
-            # Restore original on failure
-            filepath.write_text(original_text)
-            backup_path.unlink(missing_ok=True)
-            print("❌ Failed after retries — original restored")
-            return False
+            print("❌ Validation failed:")
+            for err in result.errors:
+                print(f"   - {err}")
 
-        print("Fixing with Claude...")
-        compressed = call_claude(
-            build_fix_prompt(original_text, compressed, result.errors)
-        )
-        filepath.write_text(compressed)
+            if attempt == MAX_RETRIES - 1:
+                restore_original()
+                print("❌ Failed after retries — original restored")
+                return False
+
+            print("Fixing with Claude...")
+            compressed_body = call_claude(
+                build_fix_prompt(body, compressed_body, result.errors)
+            )
+            if compressed_body is None or not compressed_body.strip():
+                restore_original()
+                print("❌ Fix aborted: Claude returned an empty response — original restored")
+                return False
+            # Frontmatter never enters the retry prompt and is reattached verbatim.
+            compressed = frontmatter + compressed_body
+            _atomic_write(filepath, compressed.encode("utf-8"), source_mode)
+    except BaseException:
+        restore_original()
+        raise
 
     return True

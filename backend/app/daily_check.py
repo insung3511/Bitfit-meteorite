@@ -54,10 +54,26 @@ def _observed_values(day: dt.date) -> dict[str, dict[str, Any]]:
             select(DailySummary).where(DailySummary.date == day)
         ).all()
 
-    by_metric: dict[str, dict[str, Any]] = {}
+    # Match summary generation's canonical-source precedence and per-day
+    # aggregation instead of letting arbitrary query order choose a value.
+    from app.summarize import _per_day_values
+
+    canonical = _per_day_values(
+        (
+            row.metric_name,
+            row.date,
+            row.value,
+            row.source,
+            row.source_platform,
+        )
+        for row in metrics
+    )
+    by_metric: dict[str, dict[str, Any]] = {
+        metric_name: {"value": values[day]}
+        for metric_name, values in canonical.items()
+    }
     for row in metrics:
-        by_metric.setdefault(row.metric_name, {})["value"] = row.value
-        by_metric[row.metric_name]["unit"] = row.unit
+        by_metric.setdefault(row.metric_name, {}).setdefault("unit", row.unit)
     for row in summaries:
         entry = by_metric.setdefault(row.metric_name, {})
         entry["mean_7d"] = row.mean_7d

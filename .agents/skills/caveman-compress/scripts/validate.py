@@ -3,14 +3,17 @@ import re
 from collections import Counter
 from pathlib import Path
 
-URL_REGEX = re.compile(r"https?://[^\s)]+")
+URL_CANDIDATE_REGEX = re.compile(r"https?://\S+")
 FENCE_OPEN_REGEX = re.compile(r"^(\s{0,3})(`{3,}|~{3,})(.*)$")
 HEADING_REGEX = re.compile(r"^(#{1,6})\s+(.*)", re.MULTILINE)
 BULLET_REGEX = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
-
-# crude but effective path detection
-# Requires either a path prefix (./ ../ / or drive letter) or a slash/backslash within the match
 PATH_REGEX = re.compile(r"(?:\./|\.\./|/|[A-Za-z]:\\)[\w\-/\\\.]+|[\w\-\.]+[/\\][\w\-/\\\.]+")
+COMMAND_REGEX = re.compile(
+    r"^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d+[.)])[ \t]+)(?:\[[ xX]\][ \t]+)?)*"
+    r"((?:\$\s+|(?:python(?:3)?|pip(?:3)?|npm|pnpm|yarn|git|docker|kubectl|curl|uvicorn|make)\s+).+)$",
+    re.MULTILINE,
+)
+INDENTED_CODE_REGEX = re.compile(r"^(?: {4}|\t)")
 
 
 class ValidationResult:
@@ -28,10 +31,7 @@ class ValidationResult:
 
 
 def read_file(path: Path) -> str:
-    return path.read_text(errors="ignore")
-
-
-# ---------- Extractors ----------
+    return path.read_text(encoding="utf-8")
 
 
 def extract_headings(text):
@@ -39,55 +39,91 @@ def extract_headings(text):
 
 
 def extract_code_blocks(text):
-    """Line-based fenced code block extractor.
-
-    Handles ``` and ~~~ fences with variable length (CommonMark: closing
-    fence must use same char and be at least as long as opening). Supports
-    nested fences (e.g. an outer 4-backtick block wrapping inner 3-backtick
-    content).
-    """
+    """Extract fenced and indented blocks, including fences continuing to EOF."""
     blocks = []
     lines = text.split("\n")
     i = 0
-    n = len(lines)
-    while i < n:
-        m = FENCE_OPEN_REGEX.match(lines[i])
-        if not m:
+    while i < len(lines):
+        match = FENCE_OPEN_REGEX.match(lines[i])
+        if match:
+            fence_char = match.group(2)[0]
+            fence_len = len(match.group(2))
+            block_lines = [lines[i]]
             i += 1
+            while i < len(lines):
+                close = FENCE_OPEN_REGEX.match(lines[i])
+                block_lines.append(lines[i])
+                i += 1
+                if (
+                    close
+                    and close.group(2)[0] == fence_char
+                    and len(close.group(2)) >= fence_len
+                    and close.group(3).strip() == ""
+                ):
+                    break
+            blocks.append("\n".join(block_lines))
             continue
-        fence_char = m.group(2)[0]
-        fence_len = len(m.group(2))
-        open_line = lines[i]
-        block_lines = [open_line]
-        i += 1
-        closed = False
-        while i < n:
-            close_m = FENCE_OPEN_REGEX.match(lines[i])
-            if (
-                close_m
-                and close_m.group(2)[0] == fence_char
-                and len(close_m.group(2)) >= fence_len
-                and close_m.group(3).strip() == ""
+
+        if INDENTED_CODE_REGEX.match(lines[i]):
+            block_lines = [lines[i]]
+            i += 1
+            while i < len(lines) and (
+                INDENTED_CODE_REGEX.match(lines[i]) or not lines[i].strip()
             ):
                 block_lines.append(lines[i])
-                closed = True
                 i += 1
-                break
-            block_lines.append(lines[i])
-            i += 1
-        if closed:
+            while block_lines and not block_lines[-1].strip():
+                block_lines.pop()
             blocks.append("\n".join(block_lines))
-        # Unclosed fences are silently skipped — they indicate malformed markdown
-        # and including them would cause false-positive validation failures.
+            continue
+
+        i += 1
     return blocks
 
 
+def _outside_fences(text):
+    lines = text.split("\n")
+    result = []
+    fence_char = None
+    fence_len = 0
+    for line in lines:
+        match = FENCE_OPEN_REGEX.match(line)
+        if fence_char is None:
+            if match:
+                fence_char = match.group(2)[0]
+                fence_len = len(match.group(2))
+                result.append("")
+            else:
+                result.append(line)
+        else:
+            result.append("")
+            if (
+                match
+                and match.group(2)[0] == fence_char
+                and len(match.group(2)) >= fence_len
+                and match.group(3).strip() == ""
+            ):
+                fence_char = None
+                fence_len = 0
+    return "\n".join(result)
+
+
+def _balanced_url(candidate):
+    # Every non-whitespace character can be URL data. Preserve candidate exactly;
+    # conservative false positives are safer than accepting a changed URL.
+    return candidate
+
+
 def extract_urls(text):
-    return set(URL_REGEX.findall(text))
+    return Counter(_balanced_url(match.group(0)) for match in URL_CANDIDATE_REGEX.finditer(text))
 
 
 def extract_paths(text):
-    return set(PATH_REGEX.findall(text))
+    return Counter(PATH_REGEX.findall(_outside_fences(text)))
+
+
+def extract_commands(text):
+    return Counter(command.strip() for command in COMMAND_REGEX.findall(_outside_fences(text)))
 
 
 def count_bullets(text):
@@ -95,98 +131,84 @@ def count_bullets(text):
 
 
 def extract_inline_codes(text):
-    text_without_fences = re.sub(r"^```[\s\S]*?^```", "", text, flags=re.MULTILINE)
-    text_without_fences = re.sub(r"^~~~[\s\S]*?^~~~", "", text_without_fences, flags=re.MULTILINE)
-    return re.findall(r"`([^`]+)`", text_without_fences)
+    """Parse inline code spans with arbitrary backtick delimiter lengths."""
+    spans = []
+    source = _outside_fences(text)
+    index = 0
+    while index < len(source):
+        if source[index] != "`":
+            index += 1
+            continue
+        end = index
+        while end < len(source) and source[end] == "`":
+            end += 1
+        delimiter = source[index:end]
+        close = source.find(delimiter, end)
+        if close < 0:
+            index = end
+            continue
+        spans.append(source[end:close])
+        index = close + len(delimiter)
+    return spans
 
 
-# ---------- Validators ----------
+def _validate_counter(name, original, compressed, result):
+    if original != compressed:
+        result.add_error(
+            f"{name} mismatch: lost={original - compressed}, added={compressed - original}"
+        )
 
 
 def validate_headings(orig, comp, result):
-    h1 = extract_headings(orig)
-    h2 = extract_headings(comp)
-
-    if len(h1) != len(h2):
-        result.add_error(f"Heading count mismatch: {len(h1)} vs {len(h2)}")
-
-    if h1 != h2:
-        result.add_warning("Heading text/order changed")
+    original = extract_headings(orig)
+    compressed = extract_headings(comp)
+    if original != compressed:
+        result.add_error(f"Headings changed: expected={original}, actual={compressed}")
 
 
 def validate_code_blocks(orig, comp, result):
-    c1 = extract_code_blocks(orig)
-    c2 = extract_code_blocks(comp)
-
-    if c1 != c2:
+    if extract_code_blocks(orig) != extract_code_blocks(comp):
         result.add_error("Code blocks not preserved exactly")
 
 
 def validate_urls(orig, comp, result):
-    u1 = extract_urls(orig)
-    u2 = extract_urls(comp)
-
-    if u1 != u2:
-        result.add_error(f"URL mismatch: lost={u1 - u2}, added={u2 - u1}")
+    _validate_counter("URL", extract_urls(orig), extract_urls(comp), result)
 
 
 def validate_paths(orig, comp, result):
-    p1 = extract_paths(orig)
-    p2 = extract_paths(comp)
+    _validate_counter("Path", extract_paths(orig), extract_paths(comp), result)
 
-    if p1 != p2:
-        result.add_warning(f"Path mismatch: lost={p1 - p2}, added={p2 - p1}")
+
+def validate_commands(orig, comp, result):
+    _validate_counter("Command", extract_commands(orig), extract_commands(comp), result)
 
 
 def validate_bullets(orig, comp, result):
-    b1 = count_bullets(orig)
-    b2 = count_bullets(comp)
-
-    if b1 == 0:
-        return
-
-    diff = abs(b1 - b2) / b1
-
-    if diff > 0.15:
-        result.add_warning(f"Bullet count changed too much: {b1} -> {b2}")
+    original = count_bullets(orig)
+    compressed = count_bullets(comp)
+    if original and abs(original - compressed) / original > 0.15:
+        result.add_warning(f"Bullet count changed too much: {original} -> {compressed}")
 
 
 def validate_inline_codes(orig, comp, result):
-    c1 = Counter(extract_inline_codes(orig))
-    c2 = Counter(extract_inline_codes(comp))
-
-    if c1 != c2:
-        lost = set(c1.keys()) - set(c2.keys())
-        added = set(c2.keys()) - set(c1.keys())
-        for code, count in c1.items():
-            if code in c2 and c2[code] < count:
-                lost.add(f"{code} (lost {count - c2[code]} of {count} occurrences)")
-        if lost:
-            result.add_error(f"Inline code lost: {lost}")
-        if added:
-            result.add_warning(f"Inline code added: {added}")
-
-
-# ---------- Main ----------
+    _validate_counter(
+        "Inline code", Counter(extract_inline_codes(orig)), Counter(extract_inline_codes(comp)), result
+    )
 
 
 def validate(original_path: Path, compressed_path: Path) -> ValidationResult:
     result = ValidationResult()
-
     orig = read_file(original_path)
     comp = read_file(compressed_path)
-
     validate_headings(orig, comp, result)
     validate_code_blocks(orig, comp, result)
     validate_urls(orig, comp, result)
     validate_paths(orig, comp, result)
+    validate_commands(orig, comp, result)
     validate_bullets(orig, comp, result)
     validate_inline_codes(orig, comp, result)
-
     return result
 
-
-# ---------- CLI ----------
 
 if __name__ == "__main__":
     import sys
@@ -194,20 +216,14 @@ if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python validate.py <original> <compressed>")
         sys.exit(1)
-
-    orig = Path(sys.argv[1]).resolve()
-    comp = Path(sys.argv[2]).resolve()
-
-    res = validate(orig, comp)
-
+    res = validate(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
     print(f"\nValid: {res.is_valid}")
-
     if res.errors:
         print("\nErrors:")
-        for e in res.errors:
-            print(f"  - {e}")
-
+        for error in res.errors:
+            print(f"  - {error}")
     if res.warnings:
         print("\nWarnings:")
-        for w in res.warnings:
-            print(f"  - {w}")
+        for warning in res.warnings:
+            print(f"  - {warning}")
+    sys.exit(0 if res.is_valid else 2)

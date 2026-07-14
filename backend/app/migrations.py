@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 
-_VERSION = 2
+_VERSION = 4
 
 
 def migrate(engine) -> None:
@@ -34,6 +34,10 @@ def migrate(engine) -> None:
             _migrate_v1(connection)
         if version < 2:
             _migrate_v2(connection)
+        if version < 3:
+            _migrate_v3(connection)
+        if version < 4:
+            _migrate_v4(connection)
 
         connection.execute(text("UPDATE schema_version SET version = :version"), {"version": _VERSION})
 
@@ -153,3 +157,26 @@ def _migrate_v2(connection) -> None:
         )
     """))
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_daily_check_date ON daily_check (date)"))
+
+
+def _migrate_v3(connection) -> None:
+    """Add ownership to sync leases so stale owners cannot release new leases."""
+    columns = {
+        row[1] for row in connection.execute(text("PRAGMA table_info('sync_lease')"))
+    }
+    if columns and "owner_id" not in columns:
+        connection.execute(
+            text("ALTER TABLE sync_lease ADD COLUMN owner_id VARCHAR NOT NULL DEFAULT 'legacy'")
+        )
+
+
+def _migrate_v4(connection) -> None:
+    """Persist login throttling across restarts and worker processes."""
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS login_throttle (
+            client_id VARCHAR PRIMARY KEY,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            window_started_at DATETIME NOT NULL,
+            blocked_until DATETIME
+        )
+    """))

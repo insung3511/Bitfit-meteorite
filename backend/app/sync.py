@@ -20,13 +20,33 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import threading
+import uuid
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
 # How far back to pull when we have no prior google_health data to anchor on.
 _DEFAULT_LOOKBACK_DAYS = 30
+_SYNC_LEASE_TTL = dt.timedelta(minutes=30)
+_SYNC_LEASE_HEARTBEAT_SECONDS = 60.0
+
+
+def _heartbeat_sync_lease(engine, SyncLease, owner_id: str, stop: threading.Event) -> None:
+    """Keep a live lease fresh without ever updating a replacement owner's row."""
+    while not stop.wait(_SYNC_LEASE_HEARTBEAT_SECONDS):
+        try:
+            with Session(engine) as session:
+                session.exec(
+                    update(SyncLease)
+                    .where(SyncLease.id == 1, SyncLease.owner_id == owner_id)
+                    .values(acquired_at=dt.datetime.utcnow())
+                )
+                session.commit()
+        except Exception:
+            # A transient database lock should not terminate future heartbeats.
+            continue
 
 
 def _determine_since(session, DailyMetric) -> dt.datetime:
@@ -65,16 +85,31 @@ def sync_once() -> dict:
     try:
         init_db()
 
+        owner_id = uuid.uuid4().hex
+        acquired_at = dt.datetime.utcnow()
+        stale_before = acquired_at - _SYNC_LEASE_TTL
         with Session(engine) as lock_session:
             acquired = lock_session.exec(
-                sqlite_insert(SyncLease).values(id=1).on_conflict_do_nothing(
-                    index_elements=["id"]
+                sqlite_insert(SyncLease)
+                .values(id=1, owner_id=owner_id, acquired_at=acquired_at)
+                .on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={"owner_id": owner_id, "acquired_at": acquired_at},
+                    where=SyncLease.acquired_at < stale_before,
                 )
             )
             lock_session.commit()
             if not acquired.rowcount:
                 return {"status": "busy", "detail": "A sync is already running."}
 
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=_heartbeat_sync_lease,
+            args=(engine, SyncLease, owner_id, heartbeat_stop),
+            name="sync-lease-heartbeat",
+            daemon=True,
+        )
+        heartbeat.start()
         try:
             with Session(engine) as session:
                 since = _determine_since(session, DailyMetric)
@@ -125,8 +160,15 @@ def sync_once() -> dict:
                 "since": since.isoformat(),
             }
         finally:
+            heartbeat_stop.set()
+            heartbeat.join()
             with Session(engine) as lock_session:
-                lock_session.exec(delete(SyncLease).where(SyncLease.id == 1))
+                lock_session.exec(
+                    delete(SyncLease).where(
+                        SyncLease.id == 1,
+                        SyncLease.owner_id == owner_id,
+                    )
+                )
                 lock_session.commit()
     except Exception as exc:  # unattended: never propagate — report and move on.
         return {"status": "error", "detail": str(exc)}

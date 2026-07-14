@@ -21,8 +21,12 @@ for _stream in (sys.stdout, sys.stderr):
 
 from pathlib import Path
 
-from .compress import backup_dir_for, compress_file
-from .detect import detect_file_type, should_compress
+try:
+    from .compress import backup_path_for, compress_file
+    from .detect import detect_file_type, should_compress
+except ImportError:  # Direct ``python scripts/cli.py`` invocation.
+    from compress import backup_path_for, compress_file
+    from detect import detect_file_type, should_compress
 
 
 def print_usage():
@@ -45,15 +49,17 @@ def main():
         print(f"❌ Not a file: {filepath}")
         sys.exit(1)
 
-    filepath = filepath.resolve()
+    # Resolution is useful for detection, but the lexical path must reach
+    # compress_file so a sensitive symlink name cannot disappear first.
+    resolved_filepath = filepath.resolve()
 
     # Detect file type
-    file_type = detect_file_type(filepath)
+    file_type = detect_file_type(resolved_filepath)
 
     print(f"Detected: {file_type}")
 
     # Check if compressible
-    if not should_compress(filepath):
+    if not should_compress(resolved_filepath):
         print("Skipping: file is not natural language (code/config)")
         sys.exit(0)
 
@@ -64,8 +70,8 @@ def main():
 
         if success:
             print("\nCompression completed successfully")
-            backup_path = backup_dir_for(filepath) / (filepath.stem + ".original.md")
-            print(f"Compressed: {filepath}")
+            backup_path = backup_path_for(resolved_filepath)
+            print(f"Compressed: {resolved_filepath}")
             print(f"Original:   {backup_path}")
             sys.exit(0)
         else:

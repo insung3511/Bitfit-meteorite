@@ -46,7 +46,9 @@ def create_session_token() -> str:
 
 def is_valid_token(token: str | None) -> bool:
     """Check a session cookie value for validity (expiry + signature)."""
-    if not token:
+    # Never fall back to the predictable empty HMAC key when configuration is
+    # missing. Login already fails closed; validation must do the same.
+    if not SESSION_SECRET or not token:
         return False
     try:
         expiry_str, signature = token.split(".", 1)

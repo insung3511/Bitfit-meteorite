@@ -19,6 +19,9 @@ import datetime as dt
 import importlib
 import os
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from cryptography.fernet import Fernet
@@ -45,6 +48,7 @@ def fresh_db(monkeypatch):
     with Session(db.engine) as session:
         session.exec(delete(models.DailyMetric))
         session.exec(delete(models.DailySummary))
+        session.exec(delete(models.SyncLease))
         session.commit()
     return db
 
@@ -123,6 +127,107 @@ def test_sync_once_is_idempotent(fresh_db, monkeypatch):
             ).all()
         )
     assert count == 1
+
+
+def test_sync_once_reclaims_stale_lease(fresh_db, monkeypatch):
+    import app.google_health_client as client
+    import app.models as models
+    import app.summarize as summarize
+    from sqlmodel import Session, select
+
+    with Session(fresh_db.engine) as session:
+        session.add(
+            models.SyncLease(
+                owner_id="crashed-worker",
+                acquired_at=dt.datetime.utcnow() - dt.timedelta(hours=1),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(client, "fetch_recent_data", lambda since: [])
+    monkeypatch.setattr(summarize, "compute_daily_summaries", lambda: {})
+    import app.daily_check as daily_check
+    monkeypatch.setattr(daily_check, "run_after_sync", lambda: None)
+
+    from app.sync import sync_once
+
+    result = sync_once()
+    assert result["status"] == "ok"
+    with Session(fresh_db.engine) as session:
+        assert session.exec(select(models.SyncLease)).first() is None
+
+
+def test_sync_once_heartbeats_long_running_lease(fresh_db, monkeypatch):
+    import app.daily_check as daily_check
+    import app.google_health_client as client
+    import app.summarize as summarize
+    import app.sync as sync
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+
+    def slow_first_fetch(since):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(client, "fetch_recent_data", slow_first_fetch)
+    monkeypatch.setattr(summarize, "compute_daily_summaries", lambda: {})
+    monkeypatch.setattr(daily_check, "run_after_sync", lambda: None)
+    # Simulate thirty minutes in milliseconds while retaining multiple beats
+    # inside a lease lifetime.
+    monkeypatch.setattr(sync, "_SYNC_LEASE_TTL", dt.timedelta(milliseconds=80))
+    monkeypatch.setattr(sync, "_SYNC_LEASE_HEARTBEAT_SECONDS", 0.01)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(sync.sync_once)
+        assert entered.wait(timeout=5)
+        time.sleep(0.2)
+        second = sync.sync_once()
+        release.set()
+        first_result = first.result(timeout=5)
+
+    assert second["status"] == "busy"
+    assert first_result["status"] == "ok"
+    assert calls == 1
+
+
+def test_lease_heartbeat_cannot_refresh_another_owner(fresh_db, monkeypatch):
+    import app.models as models
+    import app.sync as sync
+    from sqlmodel import Session
+
+    acquired_at = dt.datetime(2024, 1, 1, 12, 0)
+    with Session(fresh_db.engine) as session:
+        session.add(
+            models.SyncLease(owner_id="replacement-owner", acquired_at=acquired_at)
+        )
+        session.commit()
+
+    monkeypatch.setattr(sync, "_SYNC_LEASE_HEARTBEAT_SECONDS", 0.01)
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=sync._heartbeat_sync_lease,
+        args=(fresh_db.engine, models.SyncLease, "former-owner", stop),
+    )
+    heartbeat.start()
+    time.sleep(0.04)
+    stop.set()
+    heartbeat.join(timeout=5)
+    assert not heartbeat.is_alive()
+
+    with Session(fresh_db.engine) as session:
+        lease = session.get(models.SyncLease, 1)
+        assert lease is not None
+        assert lease.owner_id == "replacement-owner"
+        assert lease.acquired_at == acquired_at
 
 
 def test_sync_once_catches_failures(fresh_db, monkeypatch):
