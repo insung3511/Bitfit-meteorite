@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import SessionGate from "./SessionGate";
-import FloatingUtilityDock from "./FloatingUtilityDock";
 import ToastContainer from "./components/Toast";
-import AmbientBackground from "./components/AmbientBackground";
+import GridBackground from "./components/GridBackground";
+import Sidebar from "./components/Sidebar";
 
 export const metadata: Metadata = {
   title: "BitFit Meteorite",
@@ -17,12 +17,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full">
-        <AmbientBackground />
-        <SessionGate>
-          <main className="relative z-10 min-h-screen w-full">{children}</main>
-          <FloatingUtilityDock />
-        </SessionGate>
+      <body className="min-h-full" style={{ background: "var(--bg-primary)" }}>
+        <GridBackground />
+        <Sidebar />
+        <main className="relative z-10 min-h-screen w-full" style={{ marginLeft: "56px" }}>
+          <SessionGate>{children}</SessionGate>
+        </main>
         <ToastContainer />
       </body>
     </html>

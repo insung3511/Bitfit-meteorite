@@ -59,11 +59,19 @@ def login(
 
 @router.get("/callback")
 def callback(
-    code: str = Query(...),
-    state: str = Query(...),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, str]:
     """Handle Google's redirect: verify state, exchange code, store tokens."""
+    if error is not None:
+        raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
+    if code is None or state is None:
+        raise HTTPException(
+            status_code=400, detail="Missing 'code' or 'state' in callback redirect."
+        )
+
     now = dt.datetime.utcnow()
     with Session(engine) as db:
         pending = db.exec(
